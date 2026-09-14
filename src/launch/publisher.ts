@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { Transaction } from '@mysten/sui/transactions';
 import type { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import type { SuiService } from '../sui/service.js';
-import type { Store } from '../storage/store.js';
+import type { Repo } from '../storage/repo.js';
 import { deriveIdentifiers, generateCoinModule, generateMoveToml, validateLaunchParams } from './template.js';
 import { patchCoinBytecode } from './patcher.js';
 import type { LaunchParams, LaunchResult } from './types.js';
@@ -35,7 +35,7 @@ export interface LaunchServiceOptions {
 export class LaunchService {
   constructor(
     private readonly sui: SuiService,
-    private readonly store: Store,
+    private readonly repo: Repo,
     private readonly options: LaunchServiceOptions = {},
   ) {}
 
@@ -111,13 +111,15 @@ export class LaunchService {
   }): Promise<LaunchResult> {
     const { telegramId, signer, coin } = params;
     const launchId = randomUUID();
-    await this.store.addLaunch(telegramId, {
-      id: launchId,
-      name: coin.name,
-      symbol: coin.symbol,
-      decimals: coin.decimals,
-      status: 'submitted',
-      createdAt: new Date().toISOString(),
+    await this.repo.withUser(telegramId, (u) => {
+      u.launches.unshift({
+        id: launchId,
+        name: coin.name,
+        symbol: coin.symbol,
+        decimals: coin.decimals,
+        status: 'submitted',
+        createdAt: new Date().toISOString(),
+      });
     });
 
     try {
@@ -132,20 +134,26 @@ export class LaunchService {
       const parsed = parsePublish(res.objectChanges ?? []);
       const result: LaunchResult = { digest: res.digest, ...parsed };
 
-      await this.store.updateLaunch(telegramId, launchId, {
-        status: 'success',
-        digest: res.digest,
-        packageId: result.packageId,
-        coinType: result.coinType,
-        treasuryCapId: result.treasuryCapId,
+      await this.repo.withUser(telegramId, (u) => {
+        const l = u.launches.find((x) => x.id === launchId);
+        if (l) {
+          l.status = 'success';
+          l.digest = res.digest;
+          l.packageId = result.packageId;
+          l.coinType = result.coinType;
+          l.treasuryCapId = result.treasuryCapId;
+        }
       });
       return result;
     } catch (err) {
       logger.error('launch failed', { error: (err as Error).message });
-      await this.store.updateLaunch(telegramId, launchId, {
-        status: 'failed',
-        error: (err as Error).message,
-      });
+      await this.repo.withUser(telegramId, (u) => {
+        const l = u.launches.find((x) => x.id === launchId);
+        if (l) {
+          l.status = 'failed';
+          l.error = (err as Error).message;
+        }
+      }).catch(() => {});
       throw err;
     }
   }

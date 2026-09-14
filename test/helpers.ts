@@ -1,15 +1,23 @@
 import type { SuiClient } from '@mysten/sui/client';
+import { MemoryBackend } from '../src/storage/backend.js';
+import { Repo } from '../src/storage/repo.js';
 
 export interface FakeClientConfig {
   balances?: Record<string, string>; // coinType -> totalBalance
   metadata?: Record<string, { decimals: number; symbol: string; name: string } | null>;
   coins?: Record<string, string[]>; // coinType -> objectIds
+  txBlocks?: unknown[]; // for queryTransactionBlocks
   executeResult?: {
     digest?: string;
     status?: 'success' | 'failure';
     error?: string;
     objectChanges?: unknown[];
   };
+}
+
+/** An in-memory Repo for tests. */
+export function makeRepo(defaultSlippageBps = 100): Repo {
+  return new Repo(new MemoryBackend(), defaultSlippageBps);
 }
 
 /** Records of calls made to the fake, for assertions. */
@@ -55,6 +63,9 @@ export function makeFakeClient(cfg: FakeClientConfig = {}): {
     async waitForTransaction({ digest }: { digest: string }) {
       calls.waited.push(digest);
       return { digest };
+    },
+    async queryTransactionBlocks() {
+      return { data: cfg.txBlocks ?? [], nextCursor: null, hasNextPage: false };
     },
   } as unknown as SuiClient;
   return { client, calls };

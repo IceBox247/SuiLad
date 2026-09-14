@@ -150,6 +150,43 @@ export class SuiService {
     return res;
   }
 
+  /**
+   * Detect a leader's recent buys (SUI spent to acquire a token) by scanning
+   * their outgoing transactions' balance changes. Best-effort; used by
+   * copy-trading. Returns newest-first and a cursor to resume from.
+   */
+  async recentBuys(
+    address: string,
+    cursor?: string,
+    limit = 10,
+  ): Promise<{ buys: { coinType: string; suiSpent: bigint; digest: string }[]; nextCursor?: string }> {
+    const res = await this.client.queryTransactionBlocks({
+      filter: { FromAddress: address },
+      options: { showBalanceChanges: true },
+      order: 'descending',
+      limit,
+      ...(cursor ? { cursor } : {}),
+    });
+    const buys: { coinType: string; suiSpent: bigint; digest: string }[] = [];
+    for (const tx of res.data ?? []) {
+      const changes = tx.balanceChanges ?? [];
+      let suiDelta = 0n;
+      let tokenGained: { coinType: string; amount: bigint } | undefined;
+      for (const c of changes) {
+        const ownerAddr = typeof c.owner === 'object' && c.owner && 'AddressOwner' in c.owner ? c.owner.AddressOwner : undefined;
+        if (ownerAddr !== address) continue;
+        const amount = BigInt(c.amount);
+        if (c.coinType === SUI_TYPE) suiDelta += amount;
+        else if (amount > 0n) tokenGained = { coinType: c.coinType, amount };
+      }
+      // A buy: SUI net decreased and a non-SUI token increased.
+      if (tokenGained && suiDelta < 0n) {
+        buys.push({ coinType: tokenGained.coinType, suiSpent: -suiDelta, digest: tx.digest });
+      }
+    }
+    return { buys, nextCursor: res.nextCursor ?? undefined };
+  }
+
   txUrl(digest: string): string {
     const base = EXPLORER[this.network];
     return base ? `${base}/tx/${digest}` : digest;

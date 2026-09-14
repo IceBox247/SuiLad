@@ -43,9 +43,20 @@ describe('loadConfig', () => {
     expect(cfg.rpcUrl).toBe('https://my.node');
   });
 
-  it('requires a fee address when a fee is set', () => {
-    expect(() => loadConfig({ ...base, PLATFORM_FEE_BPS: '50' })).toThrow(/PLATFORM_FEE_ADDRESS/);
-    const cfg = loadConfig({ ...base, PLATFORM_FEE_BPS: '50', PLATFORM_FEE_ADDRESS: '0xfee' });
-    expect(cfg.platformFeeBps).toBe(50);
+  it('defaults fees to 1.1% charged / 1% shown and 5-level referral splits', () => {
+    const cfg = loadConfig({ ...base });
+    expect(cfg.tradingFeeBps).toBe(110);
+    expect(cfg.displayFeeBps).toBe(100);
+    expect(cfg.referralLevelBps).toEqual([2000, 500, 200, 200, 100]);
+  });
+
+  it('parses custom referral level bps', () => {
+    const cfg = loadConfig({ ...base, REFERRAL_LEVEL_BPS: '3000,1000,500' });
+    expect(cfg.referralLevelBps).toEqual([3000, 1000, 500, 0, 0]);
+  });
+
+  it('selects redis storage when Upstash creds are present', () => {
+    const cfg = loadConfig({ ...base, UPSTASH_REDIS_REST_URL: 'https://x.upstash.io', UPSTASH_REDIS_REST_TOKEN: 't' });
+    expect(cfg.storageBackend).toBe('redis');
   });
 });

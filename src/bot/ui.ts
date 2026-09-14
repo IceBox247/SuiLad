@@ -5,78 +5,98 @@ import { shortenAddress } from '../util/format.js';
 export function esc(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-
-/** Monospace/code span. */
 export function code(text: string): string {
   return `<code>${esc(text)}</code>`;
 }
-
-/** A clickable link. */
 export function link(text: string, url: string): string {
   return `<a href="${esc(url)}">${esc(text)}</a>`;
 }
 
-export const mainMenu = () =>
-  new InlineKeyboard()
-    .text('💼 Wallet', 'wallet')
-    .text('📊 Balances', 'balances')
-    .row()
+/** The main dashboard keyboard — the "menu" users navigate from. */
+export function mainMenu(): InlineKeyboard {
+  return new InlineKeyboard()
     .text('🟢 Buy', 'buy')
     .text('🔴 Sell', 'sell')
     .row()
-    .text('🚀 Launch Token', 'launch')
+    .text('📊 Positions', 'positions')
+    .text('💼 Wallet', 'wallet')
+    .row()
+    .text('🎯 Limit/DCA', 'orders')
+    .text('👥 Copy Trade', 'copy')
+    .row()
+    .text('🔫 Sniper', 'sniper')
+    .text('⭐ Watchlist', 'watchlist')
+    .row()
+    .text('🧺 Bundle Buy', 'bundle')
+    .text('🚀 Launch', 'launch')
+    .row()
+    .text('🌉 Bridge', 'bridge')
+    .text('🎁 Referrals', 'referral')
     .row()
     .text('⚙️ Settings', 'settings')
     .text('❓ Help', 'help');
+}
 
-export const backMenu = () => new InlineKeyboard().text('⬅️ Back to menu', 'menu');
+export function backMenu(): InlineKeyboard {
+  return new InlineKeyboard().text('⬅️ Back to menu', 'menu');
+}
 
-export const confirmCancel = (confirmData: string) =>
-  new InlineKeyboard().text('✅ Confirm', confirmData).text('❌ Cancel', 'cancel');
+export function confirmCancel(confirmData: string): InlineKeyboard {
+  return new InlineKeyboard().text('✅ Confirm', confirmData).text('❌ Cancel', 'cancel');
+}
 
-export const walletMenu = (address: string) =>
-  new InlineKeyboard()
-    .url('🔎 Explorer', `https://suiscan.xyz/mainnet/account/${address}`)
-    .row()
-    .text('📥 Deposit', 'deposit')
+export function walletMenu(address: string, network: string): InlineKeyboard {
+  const explorer = `https://suiscan.xyz/${network === 'mainnet' ? 'mainnet' : network}/account/${address}`;
+  return new InlineKeyboard()
+    .url('🔎 Explorer', explorer)
     .text('📤 Send', 'send')
     .row()
+    .text('🧺 Sub-wallets', 'subwallets')
     .text('🔑 Export key', 'export')
     .row()
     .text('⬅️ Back', 'menu');
+}
 
-/** Render an address as a shortened, copy-friendly code span. */
 export function addrLabel(address: string): string {
   return `${code(address)}\n<i>${shortenAddress(address)}</i>`;
 }
 
-export const WELCOME = (address: string) =>
-  [
-    '🚀 <b>Welcome to SuiPad</b>',
+export function homeText(address: string, suiBalance: string): string {
+  return [
+    '🚀 <b>SuiPad</b> — trade &amp; launch on Sui',
     '',
-    'Your all-in-one Telegram bot to <b>trade</b> and <b>launch</b> tokens on the Sui network.',
+    `💼 Wallet: ${code(address)}`,
+    `💰 Balance: <b>${esc(suiBalance)} SUI</b>`,
     '',
-    'Your wallet address:',
-    code(address),
-    '',
-    '💡 <i>Fund this address with SUI to start trading. Tap a button below.</i>',
+    'Pick an action below. Tap the <b>Menu</b> button anytime for all commands.',
   ].join('\n');
+}
 
 export const HELP = [
   '<b>SuiPad — Commands</b>',
   '',
-  '/start — create/show your wallet & menu',
-  '/wallet — wallet details & export',
-  '/balance — show your token balances',
-  '/buy <code>&lt;coinType&gt;</code> — buy a token with SUI',
-  '/sell — sell a token back to SUI',
-  '/price <code>&lt;coinType&gt;</code> — price a token in SUI',
-  '/send — transfer SUI or a token',
-  '/launch — create & deploy a new coin',
-  '/positions — recent trades & launches',
-  '/settings — slippage & preferences',
-  '/help — this message',
+  '<b>Trading</b>',
+  '/buy <code>&lt;coin&gt;</code> — buy a token with SUI',
+  '/sell — sell a held token for SUI',
+  '/price <code>&lt;coin&gt;</code> — live price',
+  '/positions — your positions &amp; PnL',
   '',
-  '⚠️ <b>Security</b>: SuiPad stores your key encrypted. Never share your private key. ',
-  'Use a burner wallet for small amounts you can afford to lose.',
+  '<b>Automation</b>',
+  '/limit — limit buy / sell',
+  '/dca — dollar-cost-average buys',
+  '/tp <code>&lt;coin&gt;</code> — take-profit • /sl — stop-loss',
+  '/copy <code>&lt;address&gt;</code> — copy a wallet',
+  '/snipe <code>&lt;coin&gt;</code> — auto-buy when live',
+  '/watch <code>&lt;coin&gt;</code> — watchlist &amp; alerts',
+  '',
+  '<b>Advanced</b>',
+  '/bundle — buy from many wallets at once',
+  '/launch — launch a coin (bonding curve)',
+  '/bridge — bridge across chains',
+  '/referral — your referral link &amp; earnings',
+  '',
+  '<b>Account</b>',
+  '/wallet • /settings • /start',
+  '',
+  '⚠️ Never share your private key. Use funds you can afford to lose.',
 ].join('\n');

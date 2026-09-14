@@ -1,84 +1,69 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { TradeService } from '../src/trade/tradeService.js';
 import { MockSwapProvider } from '../src/trade/providers/mock.js';
+import { ReferralService } from '../src/services/referralService.js';
 import { SuiService, SUI_TYPE } from '../src/sui/service.js';
-import { Store } from '../src/storage/store.js';
-import { makeFakeClient } from './helpers.js';
+import { makeFakeClient, makeRepo } from './helpers.js';
+import type { Repo } from '../src/storage/repo.js';
 
 const USDC = '0xusdc::usdc::USDC';
-let dir: string;
-let store: Store;
+const FEE_WALLET = '0x' + 'f'.repeat(64);
+let repo: Repo;
 
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'suipad-trade-'));
-  store = new Store(join(dir, 'db.json'), { slippageBps: 100 });
-  await store.init();
-  await store.upsertUser('1', { address: '0xabc', encryptedSecretKey: 'e', keyScheme: 'ED25519' });
-});
-afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  repo = makeRepo();
+  await repo.createUser('1', { address: '0xabc', encryptedSecretKey: 'e', keyScheme: 'ED25519' });
 });
 
-function buildService(feeBps = 0, feeAddress = '') {
+function buildService(feeBps = 110) {
   const { client, calls } = makeFakeClient({
     metadata: { [USDC]: { decimals: 6, symbol: 'USDC', name: 'USD Coin' } },
     executeResult: { digest: 'SWAP_DIGEST' },
   });
   const sui = new SuiService(client, 'testnet');
   const provider = new MockSwapProvider({ [`${SUI_TYPE}->${USDC}`]: [72n, 100n] });
-  const trade = new TradeService(provider, sui, store, { platformFeeBps: feeBps, platformFeeAddress: feeAddress });
+  const referral = new ReferralService(repo, [2000, 500, 200, 200, 100]);
+  const trade = new TradeService(provider, sui, repo, referral, {
+    tradingFeeBps: feeBps,
+    displayFeeBps: 100,
+    feeWallet: FEE_WALLET,
+  });
   return { trade, calls };
 }
 
 describe('TradeService', () => {
-  it('prepares a quote with metadata and formatting', async () => {
-    const { trade } = buildService();
-    const prepared = await trade.prepareQuote({
-      inputType: SUI_TYPE,
-      outputType: USDC,
-      humanAmount: '1',
-      slippageBps: 100,
-    });
-    expect(prepared.inputMeta.symbol).toBe('SUI');
-    expect(prepared.outputMeta.symbol).toBe('USDC');
-    // 1 SUI = 1e9 base; rate 72/100 -> 0.72e9 base out; USDC 6dp -> 720 formatted
-    expect(prepared.display.amountOut).toBe('720');
-    expect(prepared.feeAmount).toBe(0n);
+  it('charges 1.1% on buys but shows 1%, routing the net', async () => {
+    const { trade } = buildService(110);
+    const prepared = await trade.prepareQuote({ inputType: SUI_TYPE, outputType: USDC, humanAmount: '1', slippageBps: 100 });
+    // fee charged = 1.1% of 1e9 = 11,000,000 MIST
+    expect(prepared.feeSuiValue).toBe(11_000_000n);
+    // routed net = 989,000,000
+    expect(prepared.quote.amountIn).toBe(989_000_000n);
+    // displayed fee uses 1% (display bps) = 0.01 SUI
+    expect(prepared.display.feeShown).toBe('0.01');
+    expect(prepared.display.displayFeePct).toBe('1%');
   });
 
-  it('deducts a platform fee from SUI input', async () => {
-    const { trade } = buildService(100, '0xfee'); // 1%
-    const prepared = await trade.prepareQuote({
-      inputType: SUI_TYPE,
-      outputType: USDC,
-      humanAmount: '1',
-      slippageBps: 0,
-    });
-    // fee = 1% of 1e9 = 1e7
-    expect(prepared.feeAmount).toBe(10_000_000n);
-    // routed net = 0.99e9, out = net*72/100
-    expect(prepared.quote.amountIn).toBe(990_000_000n);
-  });
+  it('executes, records the trade, tracks the position, and credits referrers', async () => {
+    // Set up a referral chain: '1' referred by 'boss'.
+    await repo.createUser('boss', { address: '0xboss', encryptedSecretKey: 'e', keyScheme: 'ED25519' });
+    await repo.withUser('1', (u) => { u.referral.referrerId = 'boss'; });
 
-  it('executes a swap, records it, and returns a digest', async () => {
-    const { trade, calls } = buildService();
+    const { trade, calls } = buildService(110);
     const signer = Ed25519Keypair.generate();
-    const prepared = await trade.prepareQuote({
-      inputType: SUI_TYPE,
-      outputType: USDC,
-      humanAmount: '1',
-      slippageBps: 100,
-    });
-    const { digest, tradeId } = await trade.execute({ telegramId: '1', prepared, signer, kind: 'buy' });
+    const prepared = await trade.prepareQuote({ inputType: SUI_TYPE, outputType: USDC, humanAmount: '1', slippageBps: 100 });
+    const { digest, tradeId } = await trade.execute({ telegramId: '1', prepared, signer });
     expect(digest).toBe('SWAP_DIGEST');
     expect(calls.executed).toBe(1);
-    const recorded = store.getUser('1')!.trades.find((t) => t.id === tradeId);
-    expect(recorded?.status).toBe('success');
-    expect(recorded?.digest).toBe('SWAP_DIGEST');
+
+    const user = (await repo.getUser('1'))!;
+    expect(user.trades.find((t) => t.id === tradeId)?.status).toBe('success');
+    expect(user.positions.find((p) => p.coinType === USDC)?.amount).toBe(prepared.quote.amountOut.toString());
+
+    // Referrer got 20% of the fee (2000 bps).
+    const boss = (await repo.getUser('boss'))!;
+    expect(BigInt(boss.referral.unclaimedMist)).toBe((11_000_000n * 2000n) / 10_000n);
   });
 
   it('records a failed swap and rethrows', async () => {
@@ -87,13 +72,11 @@ describe('TradeService', () => {
       executeResult: { status: 'failure', error: 'boom' },
     });
     const sui = new SuiService(client, 'testnet');
-    const provider = new MockSwapProvider();
-    const trade = new TradeService(provider, sui, store, { platformFeeBps: 0, platformFeeAddress: '' });
+    const referral = new ReferralService(repo, [2000, 500, 200, 200, 100]);
+    const trade = new TradeService(new MockSwapProvider(), sui, repo, referral, { tradingFeeBps: 110, displayFeeBps: 100, feeWallet: FEE_WALLET });
     const signer = Ed25519Keypair.generate();
-    const prepared = await trade.prepareQuote({
-      inputType: SUI_TYPE, outputType: USDC, humanAmount: '1', slippageBps: 100,
-    });
-    await expect(trade.execute({ telegramId: '1', prepared, signer, kind: 'buy' })).rejects.toThrow(/boom/);
-    expect(store.getUser('1')!.trades[0]?.status).toBe('failed');
+    const prepared = await trade.prepareQuote({ inputType: SUI_TYPE, outputType: USDC, humanAmount: '1', slippageBps: 100 });
+    await expect(trade.execute({ telegramId: '1', prepared, signer })).rejects.toThrow(/boom/);
+    expect((await repo.getUser('1'))!.trades[0]?.status).toBe('failed');
   });
 });

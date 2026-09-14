@@ -1,28 +1,17 @@
 import type { Bot } from 'grammy';
 import { InlineKeyboard } from 'grammy';
 import type { BotContext } from './context.js';
-import {
-  HELP,
-  WELCOME,
-  addrLabel,
-  backMenu,
-  code,
-  confirmCancel,
-  esc,
-  link,
-  mainMenu,
-  walletMenu,
-} from './ui.js';
+import { HELP, addrLabel, backMenu, code, confirmCancel, esc, homeText, link, mainMenu, walletMenu } from './ui.js';
 import { SUI_TYPE } from '../sui/service.js';
-import { isValidCoinType, isValidSuiAddress, isPositiveAmount } from '../util/validate.js';
+import { isValidCoinType, isValidSuiAddress, isPositiveAmount, normalizeSuiAddress } from '../util/validate.js';
 import { isValidSecretKey } from '../sui/wallet.js';
-import { formatAmount } from '../util/format.js';
+import { formatAmount, fromBaseUnits } from '../util/format.js';
 import type { PreparedQuote } from '../trade/tradeService.js';
 import type { LaunchParams } from '../launch/types.js';
+import { PriceOracle } from '../trade/priceOracle.js';
 
 const tgId = (ctx: BotContext): string => String(ctx.from?.id ?? '');
 
-/** Wrap a handler so thrown errors are reported to the user instead of crashing. */
 function guard(fn: (ctx: BotContext) => Promise<void>) {
   return async (ctx: BotContext) => {
     try {
@@ -36,182 +25,149 @@ function guard(fn: (ctx: BotContext) => Promise<void>) {
 
 async function ensureWallet(ctx: BotContext): Promise<string> {
   const id = tgId(ctx);
-  if (!ctx.services.wallet.hasWallet(id)) {
-    const { address } = await ctx.services.wallet.create(id);
-    await ctx.reply(WELCOME(address), { parse_mode: 'HTML', reply_markup: mainMenu() });
-  }
+  if (!(await ctx.services.wallet.hasWallet(id))) await ctx.services.wallet.create(id);
   return id;
 }
 
-// ---------------------------------------------------------------------------
-// Screens
-// ---------------------------------------------------------------------------
-
-async function showMenu(ctx: BotContext): Promise<void> {
-  const id = tgId(ctx);
-  const address = ctx.services.wallet.getAddress(id);
-  if (!address) {
-    const { address: created } = await ctx.services.wallet.create(id);
-    await ctx.reply(WELCOME(created), { parse_mode: 'HTML', reply_markup: mainMenu() });
-    return;
-  }
-  await ctx.reply(WELCOME(address), { parse_mode: 'HTML', reply_markup: mainMenu() });
+async function home(ctx: BotContext): Promise<void> {
+  const id = await ensureWallet(ctx);
+  const address = (await ctx.services.wallet.getAddress(id))!;
+  const bal = await ctx.services.sui.getBalance(address, SUI_TYPE).catch(() => 0n);
+  await ctx.reply(homeText(address, formatAmount(bal, 9)), { parse_mode: 'HTML', reply_markup: mainMenu() });
 }
+
+// --- Wallet / positions / settings -----------------------------------------
 
 async function showWallet(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
-  const address = ctx.services.wallet.getAddress(id)!;
-  const bal = await ctx.services.sui.getBalance(address, SUI_TYPE);
-  const text = [
-    '💼 <b>Your Wallet</b>',
-    '',
-    addrLabel(address),
-    '',
-    `SUI balance: <b>${esc(formatAmount(bal, 9))}</b>`,
-  ].join('\n');
-  await ctx.reply(text, { parse_mode: 'HTML', reply_markup: walletMenu(address) });
+  const address = (await ctx.services.wallet.getAddress(id))!;
+  const bal = await ctx.services.sui.getBalance(address, SUI_TYPE).catch(() => 0n);
+  await ctx.reply(
+    ['💼 <b>Your Wallet</b>', '', addrLabel(address), '', `Balance: <b>${esc(formatAmount(bal, 9))} SUI</b>`].join('\n'),
+    { parse_mode: 'HTML', reply_markup: walletMenu(address, ctx.services.config.network) },
+  );
 }
 
-async function showBalances(ctx: BotContext): Promise<void> {
+async function showPositions(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
-  const address = ctx.services.wallet.getAddress(id)!;
-  const holdings = await ctx.services.sui.getHoldings(address);
-  if (holdings.length === 0) {
-    await ctx.reply('📊 No balances yet. Fund your wallet with SUI to get started.', {
-      parse_mode: 'HTML',
-      reply_markup: backMenu(),
-    });
-    return;
+  const address = (await ctx.services.wallet.getAddress(id))!;
+  const holdings = await ctx.services.sui.getHoldings(address).catch(() => []);
+  const u = await ctx.services.repo.getUser(id);
+  const lines: string[] = ['📊 <b>Positions</b>', ''];
+  if (holdings.length === 0) lines.push('<i>No balances yet. Fund your wallet with SUI.</i>');
+  for (const h of holdings) {
+    const pos = u?.positions.find((p) => p.coinType === h.coinType);
+    const pnl = pos ? ` • realized PnL ${formatAmount(BigInt(pos.realizedPnlMist), 9)} SUI` : '';
+    lines.push(`• <b>${esc(h.symbol)}</b>: ${esc(h.formatted)}${esc(pnl)}`);
   }
-  const lines = holdings.map(
-    (h) => `• <b>${esc(h.symbol)}</b>: ${esc(h.formatted)}  ${code(h.coinType)}`,
-  );
-  await ctx.reply(['📊 <b>Your Balances</b>', '', ...lines].join('\n'), {
-    parse_mode: 'HTML',
-    reply_markup: backMenu(),
-  });
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: backMenu() });
 }
 
 async function showSettings(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
-  const user = ctx.services.store.getUser(id)!;
+  const u = (await ctx.services.repo.getUser(id))!;
   const kb = new InlineKeyboard()
     .text('Set slippage', 'set_slippage')
+    .text(`MEV: ${u.settings.mevProtection ? 'ON' : 'OFF'}`, 'toggle_mev')
     .row()
     .text('⬅️ Back', 'menu');
   await ctx.reply(
     [
       '⚙️ <b>Settings</b>',
       '',
-      `Slippage tolerance: <b>${(user.settings.slippageBps / 100).toString()}%</b>`,
+      `Slippage: <b>${u.settings.slippageBps / 100}%</b>`,
+      `MEV protection: <b>${u.settings.mevProtection ? 'on' : 'off'}</b>`,
       `Network: <b>${esc(ctx.services.config.network)}</b>`,
-      `Swap router: <b>${esc(ctx.services.config.swapProvider)}</b>`,
+      `Trading fee: <b>${ctx.services.config.displayFeeBps / 100}%</b>`,
     ].join('\n'),
     { parse_mode: 'HTML', reply_markup: kb },
   );
 }
 
-async function showPositions(ctx: BotContext): Promise<void> {
+async function showReferral(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
-  const user = ctx.services.store.getUser(id)!;
-  const trades = user.trades.slice(0, 5);
-  const launches = user.launches.slice(0, 5);
-  const parts: string[] = ['📈 <b>Recent Activity</b>', ''];
-  if (trades.length) {
-    parts.push('<b>Trades</b>');
-    for (const t of trades) {
-      const status = t.status === 'success' ? '✅' : t.status === 'failed' ? '❌' : '⏳';
-      parts.push(`${status} ${t.kind.toUpperCase()} ${esc(shortType(t.outputType))} — ${esc(t.status)}`);
-    }
-    parts.push('');
-  }
-  if (launches.length) {
-    parts.push('<b>Launches</b>');
-    for (const l of launches) {
-      const status = l.status === 'success' ? '✅' : l.status === 'failed' ? '❌' : '⏳';
-      parts.push(`${status} ${esc(l.symbol)} (${esc(l.name)}) — ${esc(l.status)}`);
-    }
-  }
-  if (trades.length === 0 && launches.length === 0) parts.push('<i>Nothing yet.</i>');
-  await ctx.reply(parts.join('\n'), { parse_mode: 'HTML', reply_markup: backMenu() });
+  const summary = await ctx.services.referral.summary(id);
+  const botUser = ctx.me?.username ?? 'YourBot';
+  const url = `https://t.me/${botUser}?start=${summary?.code ?? ''}`;
+  const levels = ctx.services.config.referralLevelBps.map((b) => `${b / 100}%`).join(' / ');
+  await ctx.reply(
+    [
+      '🎁 <b>Referrals</b>',
+      '',
+      `Your link:\n${code(url)}`,
+      '',
+      `Unclaimed: <b>${formatAmount(summary?.unclaimedMist ?? 0n, 9)} SUI</b>`,
+      `Lifetime: <b>${formatAmount(summary?.totalEarnedMist ?? 0n, 9)} SUI</b>`,
+      `Downline: ${summary?.levelCounts.join(' / ') ?? '0'} (L1–L5)`,
+      '',
+      `You earn ${levels} of the platform fee across 5 levels.`,
+    ].join('\n'),
+    { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('💸 Claim', 'ref_claim').row().text('⬅️ Back', 'menu') },
+  );
 }
 
-// ---------------------------------------------------------------------------
-// Buy / Sell
-// ---------------------------------------------------------------------------
+async function showSubwallets(ctx: BotContext): Promise<void> {
+  const id = await ensureWallet(ctx);
+  const wallets = await ctx.services.wallet.allWallets(id);
+  const lines = ['🧺 <b>Sub-wallets</b> (for bundling)', ''];
+  for (const w of wallets) lines.push(`• <b>${esc(w.label)}</b>: ${code(w.address)}`);
+  const kb = new InlineKeyboard().text('➕ Add sub-wallet', 'subwallet_add').row().text('⬅️ Back', 'wallet');
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb });
+}
+
+// --- Buy / sell -------------------------------------------------------------
 
 async function startBuy(ctx: BotContext, coinType?: string): Promise<void> {
   const id = await ensureWallet(ctx);
   if (coinType && isValidCoinType(coinType)) {
     ctx.services.sessions.set(id, { flow: 'buy_amount', data: { coinType } });
-    await ctx.reply(
-      `🟢 Buying ${code(coinType)}\n\nHow much <b>SUI</b> do you want to spend? (e.g. <code>1.5</code>)`,
-      { parse_mode: 'HTML' },
-    );
+    await ctx.reply(`🟢 Buying ${code(coinType)}\n\nHow much <b>SUI</b> to spend?`, { parse_mode: 'HTML' });
     return;
   }
   ctx.services.sessions.set(id, { flow: 'buy_token', data: {} });
-  await ctx.reply(
-    '🟢 <b>Buy a token</b>\n\nPaste the token <b>coin type</b> you want to buy, e.g.\n' +
-      code('0xabc...::coin::COIN'),
-    { parse_mode: 'HTML' },
-  );
+  await ctx.reply('🟢 <b>Buy</b>\n\nPaste the token <b>coin type</b> (e.g. <code>0x…::coin::COIN</code>):', {
+    parse_mode: 'HTML',
+  });
 }
 
 async function startSell(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
-  const address = ctx.services.wallet.getAddress(id)!;
+  const address = (await ctx.services.wallet.getAddress(id))!;
   const holdings = (await ctx.services.sui.getHoldings(address)).filter((h) => h.coinType !== SUI_TYPE);
   if (holdings.length === 0) {
-    await ctx.reply('🔴 You have no non-SUI tokens to sell.', {
-      parse_mode: 'HTML',
-      reply_markup: backMenu(),
-    });
+    await ctx.reply('🔴 No non-SUI tokens to sell.', { reply_markup: backMenu() });
     return;
   }
   const kb = new InlineKeyboard();
-  for (const h of holdings.slice(0, 20)) {
-    kb.text(`${h.symbol} (${h.formatted})`, `sell:${h.coinType}`).row();
-  }
+  for (const h of holdings.slice(0, 20)) kb.text(`${h.symbol} (${h.formatted})`, `sell:${h.coinType}`).row();
   kb.text('⬅️ Back', 'menu');
-  await ctx.reply('🔴 <b>Sell a token</b>\n\nPick a token to sell:', {
-    parse_mode: 'HTML',
-    reply_markup: kb,
-  });
-}
-
-async function askSellAmount(ctx: BotContext, coinType: string): Promise<void> {
-  const id = tgId(ctx);
-  const meta = await ctx.services.sui.getCoinMeta(coinType);
-  ctx.services.sessions.set(id, { flow: 'sell_amount', data: { coinType } });
-  await ctx.reply(`How much <b>${esc(meta.symbol)}</b> do you want to sell?`, { parse_mode: 'HTML' });
+  await ctx.reply('🔴 <b>Sell</b> — pick a token:', { parse_mode: 'HTML', reply_markup: kb });
 }
 
 async function prepareAndConfirm(
   ctx: BotContext,
-  kind: 'buy' | 'sell',
   inputType: string,
   outputType: string,
   humanAmount: string,
 ): Promise<void> {
   const id = tgId(ctx);
-  const user = ctx.services.store.getUser(id)!;
+  const u = (await ctx.services.repo.getUser(id))!;
+  if (inputType === SUI_TYPE) ctx.services.security.assertBuyWithinCap(Number(humanAmount));
   const prepared = await ctx.services.trade.prepareQuote({
     inputType,
     outputType,
     humanAmount,
-    slippageBps: user.settings.slippageBps,
+    slippageBps: u.settings.slippageBps,
   });
-  ctx.services.pending.set(`${id}:quote`, { prepared, kind });
+  ctx.services.pending.set(`${id}:quote`, prepared);
   const text = [
-    kind === 'buy' ? '🟢 <b>Confirm Buy</b>' : '🔴 <b>Confirm Sell</b>',
+    prepared.kind === 'buy' ? '🟢 <b>Confirm Buy</b>' : prepared.kind === 'sell' ? '🔴 <b>Confirm Sell</b>' : '🔄 <b>Confirm Swap</b>',
     '',
     `Pay: <b>${esc(prepared.display.amountIn)} ${esc(prepared.inputMeta.symbol)}</b>`,
-    `Receive (est.): <b>${esc(prepared.display.amountOut)} ${esc(prepared.outputMeta.symbol)}</b>`,
-    `Min received: <b>${esc(prepared.display.minAmountOut)} ${esc(prepared.outputMeta.symbol)}</b>`,
-    prepared.feeAmount > 0n ? `Platform fee: ${esc(prepared.display.fee)} ${esc(prepared.inputMeta.symbol)}` : '',
+    `Receive (est): <b>${esc(prepared.display.amountOut)} ${esc(prepared.outputMeta.symbol)}</b>`,
+    `Min received: <b>${esc(prepared.display.minReceive)} ${esc(prepared.outputMeta.symbol)}</b>`,
+    `Fee: ${esc(prepared.display.feeShown)} SUI (${prepared.display.displayFeePct})`,
     prepared.quote.routeLabel ? `Route: <i>${esc(prepared.quote.routeLabel)}</i>` : '',
-    `Slippage: ${prepared.quote.slippageBps / 100}%`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -220,59 +176,32 @@ async function prepareAndConfirm(
 
 async function executeSwap(ctx: BotContext): Promise<void> {
   const id = tgId(ctx);
-  const entry = ctx.services.pending.get(`${id}:quote`) as
-    | { prepared: PreparedQuote; kind: 'buy' | 'sell' }
-    | undefined;
-  if (!entry) {
+  const prepared = ctx.services.pending.get(`${id}:quote`) as PreparedQuote | undefined;
+  if (!prepared) {
     await ctx.reply('That quote expired. Please start again.', { reply_markup: backMenu() });
     return;
   }
   ctx.services.pending.delete(`${id}:quote`);
-  await ctx.reply('⏳ Submitting swap…');
-  const signer = ctx.services.wallet.getKeypair(id);
-  const { digest } = await ctx.services.trade.execute({
-    telegramId: id,
-    prepared: entry.prepared,
-    signer,
-    kind: entry.kind,
-  });
-  await ctx.reply(`✅ <b>Swap submitted!</b>\n\n${link('View on explorer', ctx.services.sui.txUrl(digest))}`, {
+  await ctx.reply('⏳ Submitting…');
+  const signer = await ctx.services.wallet.getKeypair(id);
+  const { digest } = await ctx.services.trade.execute({ telegramId: id, prepared, signer });
+  await ctx.reply(`✅ Done!\n${link('View transaction', ctx.services.sui.txUrl(digest))}`, {
     parse_mode: 'HTML',
     reply_markup: mainMenu(),
   });
 }
 
-// ---------------------------------------------------------------------------
-// Price
-// ---------------------------------------------------------------------------
-
 async function showPrice(ctx: BotContext, coinType: string): Promise<void> {
-  if (!isValidCoinType(coinType)) throw new Error('Please provide a valid coin type, e.g. 0xabc::coin::COIN');
-  const user = ctx.services.store.getUser(tgId(ctx));
-  const slippageBps = user?.settings.slippageBps ?? ctx.services.config.defaultSlippageBps;
-  const prepared = await ctx.services.trade.prepareQuote({
-    inputType: SUI_TYPE,
-    outputType: coinType,
-    humanAmount: '1',
-    slippageBps,
-  });
+  if (!isValidCoinType(coinType)) throw new Error('Provide a valid coin type, e.g. 0x…::coin::COIN');
+  const meta = await ctx.services.sui.getCoinMeta(coinType);
+  const price = await ctx.services.oracle.priceNumber(coinType);
   await ctx.reply(
-    [
-      `💱 <b>${esc(prepared.outputMeta.symbol)}</b> price`,
-      '',
-      `1 SUI ≈ <b>${esc(prepared.display.amountOut)} ${esc(prepared.outputMeta.symbol)}</b>`,
-      prepared.quote.routeLabel ? `Route: <i>${esc(prepared.quote.routeLabel)}</i>` : '',
-      code(coinType),
-    ]
-      .filter(Boolean)
-      .join('\n'),
+    [`💱 <b>${esc(meta.symbol)}</b>`, '', `Price: <b>${price.toPrecision(6)} SUI</b>`, code(coinType)].join('\n'),
     { parse_mode: 'HTML', reply_markup: backMenu() },
   );
 }
 
-// ---------------------------------------------------------------------------
-// Send / transfer
-// ---------------------------------------------------------------------------
+// --- Send -------------------------------------------------------------------
 
 async function startSend(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
@@ -280,9 +209,84 @@ async function startSend(ctx: BotContext): Promise<void> {
   await ctx.reply('📤 <b>Send SUI</b>\n\nPaste the recipient Sui address:', { parse_mode: 'HTML' });
 }
 
-// ---------------------------------------------------------------------------
-// Launch
-// ---------------------------------------------------------------------------
+// --- Orders (limit / tp / sl / dca) -----------------------------------------
+
+async function ordersMenu(ctx: BotContext): Promise<void> {
+  const id = await ensureWallet(ctx);
+  const orders = await ctx.services.orders.list(id);
+  const kb = new InlineKeyboard()
+    .text('📉 Limit Buy', 'order:limit_buy')
+    .text('📈 Limit Sell', 'order:limit_sell')
+    .row()
+    .text('🎯 Take Profit', 'order:take_profit')
+    .text('🛑 Stop Loss', 'order:stop_loss')
+    .row()
+    .text('🔁 DCA', 'order:dca')
+    .row()
+    .text('⬅️ Back', 'menu');
+  const lines = ['🎯 <b>Automated Orders</b>', ''];
+  if (orders.length === 0) lines.push('<i>No active orders.</i>');
+  for (const o of orders) {
+    lines.push(
+      `• ${esc(o.kind)} ${esc(o.coinType.split('::').pop() ?? '')}` +
+        (o.triggerPrice ? ` @ ${esc(o.triggerPrice)} SUI` : '') +
+        (o.dca ? ` (${o.dca.completed}/${o.dca.totalBuys})` : ''),
+    );
+  }
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb });
+}
+
+// --- Copy / sniper / watchlist ----------------------------------------------
+
+async function copyMenu(ctx: BotContext): Promise<void> {
+  const id = await ensureWallet(ctx);
+  const copies = await ctx.services.copy.list(id);
+  const lines = ['👥 <b>Copy Trading</b>', ''];
+  if (copies.length === 0) lines.push('<i>Not copying anyone yet.</i>');
+  for (const c of copies) lines.push(`• ${code(c.leaderAddress)} — ${c.ratioBps / 100}%, max ${c.maxSui} SUI`);
+  const kb = new InlineKeyboard().text('➕ Copy a wallet', 'copy_add').row().text('⬅️ Back', 'menu');
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function sniperMenu(ctx: BotContext): Promise<void> {
+  const id = await ensureWallet(ctx);
+  const snipes = await ctx.services.sniper.list(id);
+  const lines = ['🔫 <b>Sniper</b>', '', 'Auto-buys a token the moment it becomes tradeable.', ''];
+  if (snipes.length === 0) lines.push('<i>No armed snipes.</i>');
+  for (const s of snipes) lines.push(`• ${esc(s.coinType?.split('::').pop() ?? '')} — ${s.amountSui} SUI`);
+  const kb = new InlineKeyboard().text('🎯 Arm a snipe', 'snipe_add').row().text('⬅️ Back', 'menu');
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function watchlistMenu(ctx: BotContext): Promise<void> {
+  const id = await ensureWallet(ctx);
+  const items = await ctx.services.watchlist.list(id);
+  const lines = ['⭐ <b>Watchlist</b>', ''];
+  if (items.length === 0) lines.push('<i>Empty.</i>');
+  for (const w of items) lines.push(`• <b>${esc(w.symbol)}</b>${w.alertPrice ? ` — alert ${esc(w.direction ?? 'above')} ${esc(w.alertPrice)} SUI` : ''}`);
+  const kb = new InlineKeyboard().text('➕ Add token', 'watch_add').row().text('⬅️ Back', 'menu');
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb });
+}
+
+// --- Bundle -----------------------------------------------------------------
+
+async function bundleMenu(ctx: BotContext): Promise<void> {
+  const id = await ensureWallet(ctx);
+  const wallets = await ctx.services.wallet.allWallets(id);
+  ctx.services.sessions.set(id, { flow: 'bundle_token', data: {} });
+  await ctx.reply(
+    [
+      '🧺 <b>Bundle Buy</b>',
+      '',
+      `You have <b>${wallets.length}</b> wallet(s). A bundle buys the same token from all of them at once.`,
+      '',
+      'Paste the token <b>coin type</b> to bundle-buy:',
+    ].join('\n'),
+    { parse_mode: 'HTML' },
+  );
+}
+
+// --- Launch (bonding curve) -------------------------------------------------
 
 const LAUNCH_STEPS = ['name', 'symbol', 'decimals', 'supply', 'description'] as const;
 
@@ -290,11 +294,7 @@ async function startLaunch(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
   ctx.services.sessions.set(id, { flow: 'launch', step: 0, data: {} });
   await ctx.reply(
-    [
-      '🚀 <b>Launch a new token</b>',
-      '',
-      "Let's set it up. First — what's the token <b>name</b>? (e.g. <code>My Coin</code>)",
-    ].join('\n'),
+    ['🚀 <b>Launch a token</b>', '', "What's the token <b>name</b>? (e.g. <code>My Coin</code>)"].join('\n'),
     { parse_mode: 'HTML' },
   );
 }
@@ -304,8 +304,6 @@ async function handleLaunchStep(ctx: BotContext, text: string): Promise<void> {
   const state = ctx.services.sessions.get(id)!;
   const step = state.step ?? 0;
   const field = LAUNCH_STEPS[step]!;
-
-  // Validate & store the current answer.
   switch (field) {
     case 'name':
       if (!text.trim() || text.length > 32) throw new Error('Name must be 1–32 characters.');
@@ -317,72 +315,56 @@ async function handleLaunchStep(ctx: BotContext, text: string): Promise<void> {
       break;
     case 'decimals': {
       const d = Number(text.trim());
-      if (!Number.isInteger(d) || d < 0 || d > 18) throw new Error('Decimals must be an integer 0–18.');
+      if (!Number.isInteger(d) || d < 0 || d > 18) throw new Error('Decimals must be 0–18.');
       state.data.decimals = String(d);
       break;
     }
-    case 'supply': {
-      if (!/^\d+$/.test(text.trim())) throw new Error('Supply must be a whole number (e.g. 1000000).');
+    case 'supply':
+      if (!/^\d+$/.test(text.trim())) throw new Error('Supply must be a whole number.');
       state.data.supply = text.trim();
       break;
-    }
     case 'description':
       state.data.description = text.trim() === '/skip' ? '' : text.trim();
       break;
   }
-
-  const nextStep = step + 1;
-  if (nextStep < LAUNCH_STEPS.length) {
-    ctx.services.sessions.update(id, { step: nextStep, data: state.data });
-    await ctx.reply(launchPrompt(LAUNCH_STEPS[nextStep]!), { parse_mode: 'HTML' });
+  const next = step + 1;
+  if (next < LAUNCH_STEPS.length) {
+    ctx.services.sessions.update(id, { step: next, data: state.data });
+    await ctx.reply(launchPrompt(LAUNCH_STEPS[next]!), { parse_mode: 'HTML' });
     return;
   }
-
-  // All fields collected → build params, preview, confirm.
   const params: LaunchParams = {
     name: state.data.name!,
     symbol: state.data.symbol!,
     decimals: Number(state.data.decimals),
     description: state.data.description ?? '',
     initialSupply: BigInt(state.data.supply ?? '0'),
-    iconUrl: undefined,
     keepMintAuthority: true,
   };
   ctx.services.pending.set(`${id}:launch`, params);
   ctx.services.sessions.clear(id);
-
   const preview = ctx.services.launch.previewSource(params);
-  const summary = [
-    '🚀 <b>Review your token</b>',
-    '',
-    `Name: <b>${esc(params.name)}</b>`,
-    `Symbol: <b>${esc(params.symbol)}</b>`,
-    `Decimals: <b>${params.decimals}</b>`,
-    `Initial supply: <b>${esc(params.initialSupply.toString())}</b>`,
-    params.description ? `Description: ${esc(params.description)}` : '',
-    '',
-    'Move module preview:',
-    `<pre>${esc(preview.source)}</pre>`,
-    'Publishing costs a small amount of SUI in gas. Confirm to deploy.',
-  ]
-    .filter(Boolean)
-    .join('\n');
-  await ctx.reply(summary, { parse_mode: 'HTML', reply_markup: confirmCancel('confirm_launch') });
+  await ctx.reply(
+    [
+      '🚀 <b>Review</b>',
+      `Name: <b>${esc(params.name)}</b> • Symbol: <b>${esc(params.symbol)}</b>`,
+      `Decimals: <b>${params.decimals}</b> • Supply: <b>${esc(params.initialSupply.toString())}</b>`,
+      '',
+      `<pre>${esc(preview.source)}</pre>`,
+      'Publishing costs gas. Confirm to deploy.',
+    ].join('\n'),
+    { parse_mode: 'HTML', reply_markup: confirmCancel('confirm_launch') },
+  );
 }
 
 function launchPrompt(field: (typeof LAUNCH_STEPS)[number]): string {
-  switch (field) {
-    case 'symbol':
-      return 'Great. Now the <b>symbol / ticker</b> (2–10 letters, e.g. <code>MYC</code>):';
-    case 'decimals':
-      return 'How many <b>decimals</b>? (9 is standard on Sui)';
-    case 'supply':
-      return 'What <b>total initial supply</b> (whole tokens) should be minted to you? (e.g. <code>1000000</code>)';
-    case 'description':
-      return 'Add a short <b>description</b>, or send <code>/skip</code>:';
-    default:
-      return 'Enter a value:';
-  }
+  return {
+    name: 'Enter a name:',
+    symbol: 'Now the <b>symbol</b> (2–10 chars):',
+    decimals: 'How many <b>decimals</b>? (9 is standard)',
+    supply: 'What <b>total supply</b> (whole tokens)?',
+    description: 'Add a short <b>description</b>, or send <code>/skip</code>:',
+  }[field];
 }
 
 async function executeLaunch(ctx: BotContext): Promise<void> {
@@ -393,182 +375,443 @@ async function executeLaunch(ctx: BotContext): Promise<void> {
     return;
   }
   ctx.services.pending.delete(`${id}:launch`);
-  await ctx.reply('⏳ Compiling and publishing your coin… this can take a moment.');
-  const signer = ctx.services.wallet.getKeypair(id);
+  await ctx.reply('⏳ Compiling &amp; publishing…', { parse_mode: 'HTML' });
+  const signer = await ctx.services.wallet.getKeypair(id);
   const result = await ctx.services.launch.launch({ telegramId: id, signer, coin: params });
   await ctx.reply(
     [
-      '🎉 <b>Token launched!</b>',
+      '🎉 <b>Launched!</b>',
       '',
-      `Coin type:\n${code(result.coinType)}`,
+      `Coin: ${code(result.coinType)}`,
       `Package: ${code(result.packageId)}`,
-      result.treasuryCapId ? `Treasury cap: ${code(result.treasuryCapId)}` : '',
       '',
       link('View transaction', ctx.services.sui.txUrl(result.digest)),
-    ]
-      .filter(Boolean)
-      .join('\n'),
+    ].join('\n'),
     { parse_mode: 'HTML', reply_markup: mainMenu() },
   );
 }
 
-// ---------------------------------------------------------------------------
-// Text router (multi-step flows)
-// ---------------------------------------------------------------------------
+// --- Bridge -----------------------------------------------------------------
+
+async function bridgeMenu(ctx: BotContext): Promise<void> {
+  const id = await ensureWallet(ctx);
+  ctx.services.sessions.set(id, { flow: 'bridge_from', data: {} });
+  await ctx.reply(
+    [
+      '🌉 <b>Bridge</b>',
+      '',
+      `Provider: <b>${esc(ctx.services.bridge.providerName)}</b>`,
+      '',
+      'Format: <code>fromChain toChain token amount destAddress</code>',
+      'e.g. <code>sui ethereum USDC 25 0xYourEthAddress</code>',
+      '',
+      'Send your bridge request:',
+    ].join('\n'),
+    { parse_mode: 'HTML' },
+  );
+}
+
+// --- Text router ------------------------------------------------------------
 
 async function onText(ctx: BotContext): Promise<void> {
   const id = tgId(ctx);
   const state = ctx.services.sessions.get(id);
   const text = ctx.message?.text?.trim() ?? '';
-  if (!state || text.startsWith('/')) return; // commands handled elsewhere
+  if (!state || text.startsWith('/')) return;
 
   switch (state.flow) {
     case 'import_wallet': {
-      if (!isValidSecretKey(text)) throw new Error('That does not look like a valid Sui private key.');
+      if (!isValidSecretKey(text)) throw new Error('That is not a valid Sui private key.');
       ctx.services.sessions.clear(id);
       const { address } = await ctx.services.wallet.import(id, text);
-      await ctx.reply(`✅ Wallet imported.\n${code(address)}`, {
-        parse_mode: 'HTML',
-        reply_markup: mainMenu(),
-      });
-      // Best-effort: delete the message containing the secret.
       await ctx.deleteMessage().catch(() => {});
+      await ctx.reply(`✅ Wallet imported.\n${code(address)}`, { parse_mode: 'HTML', reply_markup: mainMenu() });
       return;
     }
-    case 'buy_token': {
-      if (!isValidCoinType(text)) throw new Error('That is not a valid coin type.');
+    case 'buy_token':
+      if (!isValidCoinType(text)) throw new Error('Not a valid coin type.');
       ctx.services.sessions.set(id, { flow: 'buy_amount', data: { coinType: text } });
-      await ctx.reply('How much <b>SUI</b> do you want to spend?', { parse_mode: 'HTML' });
+      await ctx.reply('How much <b>SUI</b> to spend?', { parse_mode: 'HTML' });
       return;
-    }
-    case 'buy_amount': {
+    case 'buy_amount':
       if (!isPositiveAmount(text)) throw new Error('Enter a positive amount, e.g. 1.5');
       ctx.services.sessions.clear(id);
-      await prepareAndConfirm(ctx, 'buy', SUI_TYPE, state.data.coinType!, text);
+      await prepareAndConfirm(ctx, SUI_TYPE, state.data.coinType!, text);
       return;
-    }
-    case 'sell_amount': {
+    case 'sell_amount':
       if (!isPositiveAmount(text)) throw new Error('Enter a positive amount.');
       ctx.services.sessions.clear(id);
-      await prepareAndConfirm(ctx, 'sell', state.data.coinType!, SUI_TYPE, text);
+      await prepareAndConfirm(ctx, state.data.coinType!, SUI_TYPE, text);
       return;
-    }
-    case 'set_slippage': {
-      const pct = Number(text);
-      if (!Number.isFinite(pct) || pct <= 0 || pct > 50) throw new Error('Enter a slippage % between 0 and 50.');
-      ctx.services.sessions.clear(id);
-      await ctx.services.store.updateSettings(id, { slippageBps: Math.round(pct * 100) });
-      await ctx.reply(`✅ Slippage set to ${pct}%.`, { reply_markup: backMenu() });
-      return;
-    }
-    case 'send_recipient': {
-      if (!isValidSuiAddress(text)) throw new Error('That is not a valid Sui address.');
+    case 'send_recipient':
+      if (!isValidSuiAddress(text)) throw new Error('Not a valid Sui address.');
       ctx.services.sessions.set(id, { flow: 'send_amount', data: { recipient: text } });
       await ctx.reply('How much <b>SUI</b> to send?', { parse_mode: 'HTML' });
       return;
-    }
     case 'send_amount': {
       if (!isPositiveAmount(text)) throw new Error('Enter a positive amount.');
       const recipient = state.data.recipient!;
       ctx.services.sessions.clear(id);
       await ctx.reply('⏳ Sending…');
-      const signer = ctx.services.wallet.getKeypair(id);
       const { toBaseUnits } = await import('../util/format.js');
-      const { digest } = await ctx.services.sui.transfer({
-        signer,
-        recipient,
-        coinType: SUI_TYPE,
-        amount: toBaseUnits(text, 9),
+      const signer = await ctx.services.wallet.getKeypair(id);
+      const { digest } = await ctx.services.sui.transfer({ signer, recipient, coinType: SUI_TYPE, amount: toBaseUnits(text, 9) });
+      await ctx.reply(`✅ Sent!\n${link('View', ctx.services.sui.txUrl(digest))}`, { parse_mode: 'HTML', reply_markup: mainMenu() });
+      return;
+    }
+    case 'set_slippage': {
+      const pct = Number(text);
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 50) throw new Error('Enter a % between 0 and 50.');
+      ctx.services.sessions.clear(id);
+      await ctx.services.repo.withUser(id, (u) => {
+        u.settings.slippageBps = Math.round(pct * 100);
       });
-      await ctx.reply(`✅ Sent!\n${link('View transaction', ctx.services.sui.txUrl(digest))}`, {
-        parse_mode: 'HTML',
-        reply_markup: mainMenu(),
-      });
+      await ctx.reply(`✅ Slippage set to ${pct}%.`, { reply_markup: backMenu() });
       return;
     }
     case 'launch':
       await handleLaunchStep(ctx, text);
       return;
+    // Orders
+    case 'order_price':
+      if (!isPositiveAmount(text)) throw new Error('Enter a positive trigger price in SUI.');
+      ctx.services.sessions.update(id, { flow: 'order_size', data: { triggerPrice: text } });
+      await ctx.reply(
+        state.data.kind === 'limit_buy'
+          ? 'How much <b>SUI</b> to spend when triggered?'
+          : 'What <b>percent</b> of holdings to sell (1–100)?',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    case 'order_size': {
+      const kind = state.data.kind!;
+      ctx.services.sessions.clear(id);
+      if (kind === 'limit_buy') {
+        if (!isPositiveAmount(text)) throw new Error('Enter a positive SUI amount.');
+        await ctx.services.orders.create(id, { kind: 'limit_buy', coinType: state.data.coinType!, triggerPrice: state.data.triggerPrice!, amountSui: text });
+      } else {
+        const pct = Number(text);
+        if (!Number.isInteger(pct) || pct < 1 || pct > 100) throw new Error('Percent must be 1–100.');
+        await ctx.services.orders.create(id, { kind: kind as 'limit_sell' | 'take_profit' | 'stop_loss', coinType: state.data.coinType!, triggerPrice: state.data.triggerPrice!, sellPercent: pct });
+      }
+      await ctx.reply('✅ Order created. It will run automatically.', { reply_markup: mainMenu() });
+      return;
+    }
+    case 'order_token':
+      if (!isValidCoinType(text)) throw new Error('Not a valid coin type.');
+      ctx.services.sessions.update(id, { flow: 'order_price', data: { coinType: text } });
+      await ctx.reply('Enter the <b>trigger price</b> (SUI per token):', { parse_mode: 'HTML' });
+      return;
+    case 'dca_token':
+      if (!isValidCoinType(text)) throw new Error('Not a valid coin type.');
+      ctx.services.sessions.update(id, { flow: 'dca_amount', data: { coinType: text } });
+      await ctx.reply('SUI amount <b>per buy</b>?', { parse_mode: 'HTML' });
+      return;
+    case 'dca_amount':
+      if (!isPositiveAmount(text)) throw new Error('Enter a positive amount.');
+      ctx.services.sessions.update(id, { flow: 'dca_count', data: { amountSui: text } });
+      await ctx.reply('How many buys <b>total</b>?', { parse_mode: 'HTML' });
+      return;
+    case 'dca_count': {
+      const n = Number(text);
+      if (!Number.isInteger(n) || n < 1 || n > 1000) throw new Error('Enter 1–1000.');
+      ctx.services.sessions.update(id, { flow: 'dca_interval', data: { count: String(n) } });
+      await ctx.reply('Interval between buys in <b>minutes</b>?', { parse_mode: 'HTML' });
+      return;
+    }
+    case 'dca_interval': {
+      const mins = Number(text);
+      if (!Number.isFinite(mins) || mins < 1) throw new Error('Enter minutes ≥ 1.');
+      ctx.services.sessions.clear(id);
+      await ctx.services.orders.create(id, {
+        kind: 'dca',
+        coinType: state.data.coinType!,
+        dca: { intervalSec: Math.round(mins * 60), totalBuys: Number(state.data.count), amountSui: state.data.amountSui! },
+      });
+      await ctx.reply('✅ DCA scheduled.', { reply_markup: mainMenu() });
+      return;
+    }
+    // Copy
+    case 'copy_leader':
+      try {
+        normalizeSuiAddress(text);
+      } catch {
+        throw new Error('Not a valid Sui address.');
+      }
+      ctx.services.sessions.update(id, { flow: 'copy_ratio', data: { leader: text } });
+      await ctx.reply('What <b>percent</b> of the leader’s buy size to mirror? (e.g. 50)', { parse_mode: 'HTML' });
+      return;
+    case 'copy_ratio': {
+      const pct = Number(text);
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 100) throw new Error('Enter 1–100.');
+      ctx.services.sessions.update(id, { flow: 'copy_max', data: { ratio: String(Math.round(pct * 100)) } });
+      await ctx.reply('Max <b>SUI</b> per mirrored buy?', { parse_mode: 'HTML' });
+      return;
+    }
+    case 'copy_max':
+      if (!isPositiveAmount(text)) throw new Error('Enter a positive amount.');
+      ctx.services.sessions.clear(id);
+      await ctx.services.copy.follow(id, state.data.leader!, Number(state.data.ratio), text);
+      await ctx.reply('✅ Now copying that wallet.', { reply_markup: mainMenu() });
+      return;
+    // Sniper
+    case 'snipe_token':
+      if (!isValidCoinType(text)) throw new Error('Not a valid coin type.');
+      ctx.services.sessions.update(id, { flow: 'snipe_amount', data: { coinType: text } });
+      await ctx.reply('SUI amount to snipe with?', { parse_mode: 'HTML' });
+      return;
+    case 'snipe_amount': {
+      if (!isPositiveAmount(text)) throw new Error('Enter a positive amount.');
+      ctx.services.sessions.clear(id);
+      const u = (await ctx.services.repo.getUser(id))!;
+      await ctx.services.sniper.arm(id, { coinType: state.data.coinType!, amountSui: text, maxSlippageBps: Math.max(u.settings.slippageBps, 500) });
+      await ctx.reply('🎯 Snipe armed. I will buy the instant it’s tradeable.', { reply_markup: mainMenu() });
+      return;
+    }
+    // Watchlist
+    case 'watch_token':
+      if (!isValidCoinType(text)) throw new Error('Not a valid coin type.');
+      ctx.services.sessions.update(id, { flow: 'watch_price', data: { coinType: text } });
+      await ctx.reply('Alert price in SUI (or send <code>/skip</code> for no alert):', { parse_mode: 'HTML' });
+      return;
+    case 'watch_price': {
+      ctx.services.sessions.clear(id);
+      if (text === '/skip') {
+        await ctx.services.watchlist.add(id, state.data.coinType!);
+      } else {
+        if (!isPositiveAmount(text)) throw new Error('Enter a price or /skip.');
+        const cur = await ctx.services.oracle.priceNumber(state.data.coinType!).catch(() => 0);
+        const dir = Number(text) >= cur ? 'above' : 'below';
+        await ctx.services.watchlist.add(id, state.data.coinType!, text, dir);
+      }
+      await ctx.reply('⭐ Added to watchlist.', { reply_markup: mainMenu() });
+      return;
+    }
+    // Bundle
+    case 'bundle_token':
+      if (!isValidCoinType(text)) throw new Error('Not a valid coin type.');
+      ctx.services.sessions.update(id, { flow: 'bundle_amount', data: { coinType: text } });
+      await ctx.reply('SUI amount <b>per wallet</b>?', { parse_mode: 'HTML' });
+      return;
+    case 'bundle_amount': {
+      if (!isPositiveAmount(text)) throw new Error('Enter a positive amount.');
+      ctx.services.sessions.clear(id);
+      ctx.services.security.assertBuyWithinCap(Number(text));
+      const wallets = await ctx.services.wallet.allWallets(id);
+      await ctx.reply(`⏳ Buying from ${wallets.length} wallet(s)…`);
+      const u = (await ctx.services.repo.getUser(id))!;
+      const results = await ctx.services.bundle.bundleBuy({
+        telegramId: id,
+        coinType: state.data.coinType!,
+        amountSuiPerWallet: text,
+        walletIds: wallets.map((w) => w.id),
+        slippageBps: u.settings.slippageBps,
+      });
+      const ok = results.filter((r) => r.status === 'success').length;
+      const lines = [`🧺 <b>Bundle complete</b>: ${ok}/${results.length} succeeded`, ''];
+      for (const r of results) lines.push(`${r.status === 'success' ? '✅' : '❌'} ${esc(r.label)}${r.error ? ` — ${esc(r.error)}` : ''}`);
+      await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: mainMenu() });
+      return;
+    }
+    // Bridge
+    case 'bridge_from': {
+      const parts = text.split(/\s+/);
+      if (parts.length < 5) throw new Error('Format: fromChain toChain token amount destAddress');
+      ctx.services.sessions.clear(id);
+      const [fromChain, toChain, token, amount, ...addr] = parts;
+      const quote = await ctx.services.bridge.quote({
+        fromChain: fromChain as never,
+        toChain: toChain as never,
+        fromToken: token!,
+        toToken: token!,
+        amount: amount!,
+        toAddress: addr.join(''),
+      });
+      await ctx.reply(
+        [
+          '🌉 <b>Bridge Quote</b>',
+          '',
+          `${esc(quote.amountIn)} ${esc(token!)} on ${esc(fromChain!)} → <b>${esc(quote.estAmountOut)} ${esc(token!)}</b> on ${esc(toChain!)}`,
+          quote.feeUsd ? `Fee: ~$${esc(quote.feeUsd)}` : '',
+          quote.etaSeconds ? `ETA: ~${Math.round(quote.etaSeconds / 60)} min` : '',
+          '',
+          `<i>Provider: ${esc(quote.provider)}. Complete the transfer via the provider to your destination address.</i>`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        { parse_mode: 'HTML', reply_markup: mainMenu() },
+      );
+      return;
+    }
   }
 }
 
-function shortType(coinType: string): string {
-  const parts = coinType.split('::');
-  return parts[parts.length - 1] ?? coinType;
-}
-
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
+// --- Registration -----------------------------------------------------------
 
 export function registerHandlers(bot: Bot<BotContext>): void {
+  // /start supports a referral payload: /start <CODE>
   bot.command('start', guard(async (ctx) => {
-    await ensureWallet(ctx);
-    await showMenu(ctx);
+    const id = tgId(ctx);
+    if (!(await ctx.services.wallet.hasWallet(id))) {
+      const codeArg = ctx.match?.toString().trim();
+      let referrerId: string | undefined;
+      if (codeArg) referrerId = await ctx.services.repo.resolveRefCode(codeArg);
+      await ctx.services.wallet.create(id, referrerId && referrerId !== id ? referrerId : undefined);
+      if (referrerId && referrerId !== id) await ctx.services.referral.registerDownline(id).catch(() => {});
+    }
+    await home(ctx);
   }));
-  bot.command('help', guard(async (ctx) => {
-    await ctx.reply(HELP, { parse_mode: 'HTML', reply_markup: backMenu() });
-  }));
+
+  bot.command('help', guard(async (ctx) => ctx.reply(HELP, { parse_mode: 'HTML', reply_markup: backMenu() }).then(() => {})));
+  bot.command('menu', guard(home));
   bot.command('wallet', guard(showWallet));
-  bot.command(['balance', 'balances'], guard(showBalances));
+  bot.command(['balance', 'balances', 'positions'], guard(showPositions));
   bot.command('settings', guard(showSettings));
-  bot.command('positions', guard(showPositions));
+  bot.command('referral', guard(showReferral));
   bot.command('send', guard(startSend));
   bot.command('launch', guard(startLaunch));
-  bot.command('buy', guard(async (ctx) => {
-    const arg = ctx.match?.toString().trim();
-    await startBuy(ctx, arg || undefined);
+  bot.command('limit', guard(ordersMenu));
+  bot.command('dca', guard(async (ctx) => {
+    const id = await ensureWallet(ctx);
+    ctx.services.sessions.set(id, { flow: 'dca_token', data: {} });
+    await ctx.reply('🔁 <b>DCA</b>\n\nPaste the token coin type to DCA into:', { parse_mode: 'HTML' });
   }));
+  bot.command('copy', guard(async (ctx) => {
+    const arg = ctx.match?.toString().trim();
+    if (arg) {
+      const id = await ensureWallet(ctx);
+      ctx.services.sessions.update(id, { flow: 'copy_ratio', data: { leader: arg } });
+      await ctx.reply('What percent of the leader’s buy to mirror? (e.g. 50)');
+    } else await copyMenu(ctx);
+  }));
+  bot.command('snipe', guard(async (ctx) => {
+    const arg = ctx.match?.toString().trim();
+    const id = await ensureWallet(ctx);
+    if (arg && isValidCoinType(arg)) {
+      ctx.services.sessions.set(id, { flow: 'snipe_amount', data: { coinType: arg } });
+      await ctx.reply('SUI amount to snipe with?');
+    } else await sniperMenu(ctx);
+  }));
+  bot.command('watch', guard(async (ctx) => {
+    const arg = ctx.match?.toString().trim();
+    const id = await ensureWallet(ctx);
+    if (arg && isValidCoinType(arg)) {
+      ctx.services.sessions.set(id, { flow: 'watch_price', data: { coinType: arg } });
+      await ctx.reply('Alert price in SUI (or /skip):');
+    } else await watchlistMenu(ctx);
+  }));
+  bot.command('bundle', guard(bundleMenu));
+  bot.command('bridge', guard(bridgeMenu));
+  bot.command('buy', guard(async (ctx) => startBuy(ctx, ctx.match?.toString().trim() || undefined)));
   bot.command('sell', guard(startSell));
   bot.command('price', guard(async (ctx) => {
     const arg = ctx.match?.toString().trim();
     if (!arg) throw new Error('Usage: /price <coinType>');
     await showPrice(ctx, arg);
   }));
+  bot.command('tp', guard(async (ctx) => startSellOrder(ctx, 'take_profit', ctx.match?.toString().trim())));
+  bot.command('sl', guard(async (ctx) => startSellOrder(ctx, 'stop_loss', ctx.match?.toString().trim())));
 
-  // Callback queries (inline buttons)
-  bot.callbackQuery('menu', guard(async (ctx) => { await ctx.answerCallbackQuery(); await showMenu(ctx); }));
-  bot.callbackQuery('wallet', guard(async (ctx) => { await ctx.answerCallbackQuery(); await showWallet(ctx); }));
-  bot.callbackQuery('balances', guard(async (ctx) => { await ctx.answerCallbackQuery(); await showBalances(ctx); }));
-  bot.callbackQuery('settings', guard(async (ctx) => { await ctx.answerCallbackQuery(); await showSettings(ctx); }));
-  bot.callbackQuery('help', guard(async (ctx) => { await ctx.answerCallbackQuery(); await ctx.reply(HELP, { parse_mode: 'HTML', reply_markup: backMenu() }); }));
-  bot.callbackQuery('buy', guard(async (ctx) => { await ctx.answerCallbackQuery(); await startBuy(ctx); }));
-  bot.callbackQuery('sell', guard(async (ctx) => { await ctx.answerCallbackQuery(); await startSell(ctx); }));
-  bot.callbackQuery('launch', guard(async (ctx) => { await ctx.answerCallbackQuery(); await startLaunch(ctx); }));
-  bot.callbackQuery('send', guard(async (ctx) => { await ctx.answerCallbackQuery(); await startSend(ctx); }));
-  bot.callbackQuery('deposit', guard(async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const address = ctx.services.wallet.getAddress(tgId(ctx));
-    await ctx.reply(`📥 Deposit to:\n${code(address ?? '')}`, { parse_mode: 'HTML', reply_markup: backMenu() });
-  }));
-  bot.callbackQuery('export', guard(async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const secret = ctx.services.wallet.exportSecret(tgId(ctx));
-    await ctx.reply(
-      `🔑 <b>Your private key</b> (keep it secret!):\n${code(secret)}\n\n<i>Anyone with this key controls your funds.</i>`,
-      { parse_mode: 'HTML', reply_markup: backMenu() },
-    );
-  }));
-  bot.callbackQuery('set_slippage', guard(async (ctx) => {
-    await ctx.answerCallbackQuery();
+  // Callbacks
+  const cb = (data: string, fn: (ctx: BotContext) => Promise<void>) =>
+    bot.callbackQuery(data, guard(async (ctx) => {
+      await ctx.answerCallbackQuery().catch(() => {});
+      await fn(ctx);
+    }));
+
+  cb('menu', home);
+  cb('wallet', showWallet);
+  cb('positions', showPositions);
+  cb('settings', showSettings);
+  cb('referral', showReferral);
+  cb('help', async (ctx) => { await ctx.reply(HELP, { parse_mode: 'HTML', reply_markup: backMenu() }); });
+  cb('buy', async (ctx) => startBuy(ctx));
+  cb('sell', startSell);
+  cb('send', startSend);
+  cb('orders', ordersMenu);
+  cb('copy', copyMenu);
+  cb('sniper', sniperMenu);
+  cb('watchlist', watchlistMenu);
+  cb('bundle', bundleMenu);
+  cb('bridge', bridgeMenu);
+  cb('launch', startLaunch);
+  cb('subwallets', showSubwallets);
+
+  cb('toggle_mev', async (ctx) => {
+    await ctx.services.repo.withUser(tgId(ctx), (u) => { u.settings.mevProtection = !u.settings.mevProtection; });
+    await showSettings(ctx);
+  });
+  cb('set_slippage', async (ctx) => {
     ctx.services.sessions.set(tgId(ctx), { flow: 'set_slippage', data: {} });
-    await ctx.reply('Enter your slippage tolerance in % (e.g. 1 for 1%):');
-  }));
+    await ctx.reply('Enter slippage % (e.g. 1):');
+  });
+  cb('ref_claim', async (ctx) => {
+    const amt = await ctx.services.referral.claim(tgId(ctx));
+    if (amt <= 0n) { await ctx.reply('Nothing to claim yet.', { reply_markup: backMenu() }); return; }
+    await ctx.reply(
+      `✅ Claim recorded for ${formatAmount(amt, 9)} SUI. Payouts are processed by the operator to your wallet.`,
+      { reply_markup: backMenu() },
+    );
+  });
+  cb('subwallet_add', async (ctx) => {
+    const w = await ctx.services.wallet.addSubWallet(tgId(ctx));
+    await ctx.reply(`✅ Added ${esc(w.label)}:\n${code(w.address)}\nFund it with SUI to include it in bundles.`, { parse_mode: 'HTML', reply_markup: backMenu() });
+  });
+  cb('copy_add', async (ctx) => {
+    ctx.services.sessions.set(tgId(ctx), { flow: 'copy_leader', data: {} });
+    await ctx.reply('Paste the wallet address to copy:');
+  });
+  cb('snipe_add', async (ctx) => {
+    ctx.services.sessions.set(tgId(ctx), { flow: 'snipe_token', data: {} });
+    await ctx.reply('Paste the token coin type to snipe:');
+  });
+  cb('watch_add', async (ctx) => {
+    ctx.services.sessions.set(tgId(ctx), { flow: 'watch_token', data: {} });
+    await ctx.reply('Paste the token coin type to watch:');
+  });
+  cb('export', async (ctx) => {
+    const secret = await ctx.services.wallet.exportSecret(tgId(ctx));
+    await ctx.reply(`🔑 <b>Private key</b> (keep secret!):\n${code(secret)}`, { parse_mode: 'HTML', reply_markup: backMenu() });
+  });
+
   bot.callbackQuery(/^sell:(.+)$/, guard(async (ctx) => {
-    await ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery().catch(() => {});
     const coinType = ctx.match![1]!;
-    await askSellAmount(ctx, coinType);
+    const meta = await ctx.services.sui.getCoinMeta(coinType);
+    ctx.services.sessions.set(tgId(ctx), { flow: 'sell_amount', data: { coinType } });
+    await ctx.reply(`How much <b>${esc(meta.symbol)}</b> to sell?`, { parse_mode: 'HTML' });
   }));
-  bot.callbackQuery('confirm_swap', guard(async (ctx) => { await ctx.answerCallbackQuery(); await executeSwap(ctx); }));
-  bot.callbackQuery('confirm_launch', guard(async (ctx) => { await ctx.answerCallbackQuery(); await executeLaunch(ctx); }));
+  bot.callbackQuery(/^order:(.+)$/, guard(async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const kind = ctx.match![1]!;
+    const id = tgId(ctx);
+    if (kind === 'dca') {
+      ctx.services.sessions.set(id, { flow: 'dca_token', data: {} });
+      await ctx.reply('Paste the token coin type to DCA into:');
+      return;
+    }
+    ctx.services.sessions.set(id, { flow: 'order_token', data: { kind } });
+    await ctx.reply('Paste the token coin type:');
+  }));
+
+  bot.callbackQuery('confirm_swap', guard(async (ctx) => { await ctx.answerCallbackQuery().catch(() => {}); await executeSwap(ctx); }));
+  bot.callbackQuery('confirm_launch', guard(async (ctx) => { await ctx.answerCallbackQuery().catch(() => {}); await executeLaunch(ctx); }));
   bot.callbackQuery('cancel', guard(async (ctx) => {
-    await ctx.answerCallbackQuery('Cancelled');
+    await ctx.answerCallbackQuery('Cancelled').catch(() => {});
     ctx.services.sessions.clear(tgId(ctx));
-    ctx.services.pending.delete(`${tgId(ctx)}:quote`);
-    ctx.services.pending.delete(`${tgId(ctx)}:launch`);
     await ctx.reply('Cancelled.', { reply_markup: mainMenu() });
   }));
 
-  // Free-text (flow steps)
   bot.on('message:text', guard(onText));
+}
+
+async function startSellOrder(ctx: BotContext, kind: 'take_profit' | 'stop_loss', coinType?: string): Promise<void> {
+  const id = await ensureWallet(ctx);
+  if (coinType && isValidCoinType(coinType)) {
+    ctx.services.sessions.set(id, { flow: 'order_price', data: { kind, coinType } });
+    await ctx.reply('Enter the trigger price (SUI per token):');
+  } else {
+    ctx.services.sessions.set(id, { flow: 'order_token', data: { kind } });
+    await ctx.reply('Paste the token coin type:');
+  }
 }

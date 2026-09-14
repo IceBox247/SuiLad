@@ -36,17 +36,17 @@ export class MockSwapProvider implements SwapProvider {
   }
 
   async buildTransaction(params: BuildSwapParams): Promise<Transaction> {
-    const { quote, sender } = params;
+    const { quote, sender, fee } = params;
     const tx = new Transaction();
     tx.setSender(sender);
-    // Self-transfer as a safe stand-in for a real swap.
-    if (quote.inputType === SUI_TYPE) {
-      const [coin] = tx.splitCoins(tx.gas, [quote.amountIn]);
-      tx.transferObjects([coin], sender);
-    } else {
-      // For non-SUI, just transfer a zero-value marker to self via gas.
-      const [coin] = tx.splitCoins(tx.gas, [0n]);
-      tx.transferObjects([coin], sender);
+    // Self-transfer as a safe stand-in for a real swap (SUI leg via gas).
+    const amount = quote.inputType === SUI_TYPE ? quote.amountIn : 0n;
+    const [coin] = tx.splitCoins(tx.gas, [amount]);
+    tx.transferObjects([coin], sender);
+    // Emulate the platform-fee transfer so the flow is exercised end-to-end.
+    if (fee && fee.amount > 0n && fee.wallet) {
+      const [feeCoin] = tx.splitCoins(tx.gas, [fee.amount]);
+      tx.transferObjects([feeCoin], fee.wallet);
     }
     return tx;
   }

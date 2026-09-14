@@ -5,13 +5,9 @@ import type { LogLevel } from './logger.js';
 loadDotenv();
 
 /**
- * Default RPC endpoints per network.
- *
- * Sui's own public fullnodes (fullnode.<net>.sui.io) have DEPRECATED the classic
- * JSON-RPC methods this bot (and the Cetus SDK) rely on, returning
- * "Method not found". We therefore default to JSON-RPC-compatible community
- * providers. For production/mainnet, set SUI_RPC_URL to your own node or a
- * dedicated provider (e.g. an API-key endpoint) for reliability and rate limits.
+ * Default RPC endpoints per network. Sui's public fullnodes have deprecated the
+ * classic JSON-RPC methods this bot (and the Cetus SDK) rely on, so we default
+ * to JSON-RPC-compatible community providers. Set SUI_RPC_URL for production.
  */
 export const NETWORK_RPC: Record<string, string> = {
   mainnet: 'https://sui-rpc.publicnode.com',
@@ -23,55 +19,103 @@ export const NETWORK_RPC: Record<string, string> = {
 const csvIds = z
   .string()
   .optional()
-  .transform((v) =>
-    (v ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
+  .transform((v) => (v ?? '').split(',').map((s) => s.trim()).filter(Boolean));
+
+const csvNums = (fallback: number[]) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (!v) return fallback;
+      const parts = v.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n));
+      return parts.length ? parts : fallback;
+    });
 
 const RawSchema = z.object({
+  // Telegram
   TELEGRAM_BOT_TOKEN: z.string().min(1, 'TELEGRAM_BOT_TOKEN is required'),
   ALLOWED_TELEGRAM_IDS: csvIds,
-  SUI_NETWORK: z
-    .enum(['mainnet', 'testnet', 'devnet', 'localnet', 'custom'])
-    .default('testnet'),
+  ADMIN_TELEGRAM_IDS: csvIds,
+
+  // Network
+  SUI_NETWORK: z.enum(['mainnet', 'testnet', 'devnet', 'localnet', 'custom']).default('testnet'),
   SUI_RPC_URL: z.string().url().optional().or(z.literal('')),
-  WALLET_ENCRYPTION_KEY: z
-    .string()
-    .min(32, 'WALLET_ENCRYPTION_KEY must be at least 32 characters (use `openssl rand -hex 32`)'),
-  SWAP_PROVIDER: z.enum(['mock', 'sevenk', 'cetus']).default('mock'),
+
+  // Wallet security
+  WALLET_ENCRYPTION_KEY: z.string().min(32, 'WALLET_ENCRYPTION_KEY must be at least 32 characters'),
+
+  // Trading / routing
+  SWAP_PROVIDER: z.enum(['mock', 'cetus']).default('mock'),
   SWAP_API_BASE_URL: z.string().url().optional().or(z.literal('')),
   DEFAULT_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(5000).default(100),
-  PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(500).default(0),
-  PLATFORM_FEE_ADDRESS: z.string().optional().or(z.literal('')),
+
+  // Fees (charged vs displayed) + referral distribution
+  TRADING_FEE_BPS: z.coerce.number().int().min(0).max(1000).default(110), // actually charged (1.1%)
+  DISPLAY_FEE_BPS: z.coerce.number().int().min(0).max(1000).default(100), // shown to users (1%)
+  FEE_WALLET_ADDRESS: z.string().optional().or(z.literal('')),
+  REFERRAL_LEVEL_BPS: csvNums([2000, 500, 200, 200, 100]), // % of fee to L1..L5
+
+  // Storage
+  UPSTASH_REDIS_REST_URL: z.string().url().optional().or(z.literal('')),
+  UPSTASH_REDIS_REST_TOKEN: z.string().optional().or(z.literal('')),
   DATA_FILE: z.string().default('./data/suipad.json'),
+
+  // Launch / launchpad
   SUI_CLI_PATH: z.string().optional().or(z.literal('')),
   COIN_TEMPLATE_PATH: z.string().optional().or(z.literal('')),
+  LAUNCHPAD_PACKAGE_ID: z.string().optional().or(z.literal('')),
+  LAUNCHPAD_CONFIG_ID: z.string().optional().or(z.literal('')),
+
+  // Bridging
+  BRIDGE_PROVIDER: z.enum(['mock', 'mayan', 'debridge']).default('mock'),
+  BRIDGE_API_BASE_URL: z.string().url().optional().or(z.literal('')),
+
+  // Security / limits
+  RATE_LIMIT_PER_MIN: z.coerce.number().int().min(1).max(6000).default(30),
+  MAX_BUY_SUI: z.coerce.number().min(0).default(0), // 0 = no cap
+  MAX_SUBWALLETS: z.coerce.number().int().min(1).max(50).default(10),
+
+  // Hosting (Vercel webhook + cron)
+  PUBLIC_URL: z.string().url().optional().or(z.literal('')),
+  WEBHOOK_SECRET: z.string().optional().or(z.literal('')),
+  CRON_SECRET: z.string().optional().or(z.literal('')),
+
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
 export interface AppConfig {
   telegramBotToken: string;
   allowedTelegramIds: string[];
+  adminTelegramIds: string[];
   network: string;
   rpcUrl: string;
   walletEncryptionKey: string;
-  swapProvider: 'mock' | 'sevenk' | 'cetus';
+  swapProvider: 'mock' | 'cetus';
   swapApiBaseUrl: string;
   defaultSlippageBps: number;
-  platformFeeBps: number;
-  platformFeeAddress: string;
+  tradingFeeBps: number;
+  displayFeeBps: number;
+  feeWalletAddress: string;
+  referralLevelBps: number[];
+  storageBackend: 'redis' | 'file';
+  upstashUrl: string;
+  upstashToken: string;
   dataFile: string;
   suiCliPath: string;
   coinTemplatePath: string;
+  launchpadPackageId: string;
+  launchpadConfigId: string;
+  bridgeProvider: 'mock' | 'mayan' | 'debridge';
+  bridgeApiBaseUrl: string;
+  rateLimitPerMin: number;
+  maxBuySui: number;
+  maxSubWallets: number;
+  publicUrl: string;
+  webhookSecret: string;
+  cronSecret: string;
   logLevel: LogLevel;
 }
 
-/**
- * Parse and validate configuration from `env` (defaults to process.env).
- * Throws a readable aggregated error when required values are missing.
- */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = RawSchema.safeParse(env);
   if (!parsed.success) {
@@ -85,34 +129,49 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const network = raw.SUI_NETWORK;
   let rpcUrl = raw.SUI_RPC_URL || '';
   if (!rpcUrl) {
-    if (network === 'custom') {
-      throw new Error('SUI_NETWORK=custom requires SUI_RPC_URL to be set.');
-    }
+    if (network === 'custom') throw new Error('SUI_NETWORK=custom requires SUI_RPC_URL to be set.');
     rpcUrl = NETWORK_RPC[network]!;
   }
 
-  if ((raw.SWAP_PROVIDER === 'sevenk' || raw.SWAP_PROVIDER === 'cetus') && !raw.SWAP_API_BASE_URL) {
-    // Not fatal — providers fall back to their well-known defaults — but warn-worthy.
+  if (raw.TRADING_FEE_BPS > 0 && !raw.FEE_WALLET_ADDRESS) {
+    // Not fatal, but fees can't be collected without a destination.
   }
 
-  if (raw.PLATFORM_FEE_BPS > 0 && !raw.PLATFORM_FEE_ADDRESS) {
-    throw new Error('PLATFORM_FEE_BPS > 0 requires PLATFORM_FEE_ADDRESS to be set.');
-  }
+  const levels = raw.REFERRAL_LEVEL_BPS.slice(0, 5);
+  while (levels.length < 5) levels.push(0);
+
+  const hasRedis = Boolean(raw.UPSTASH_REDIS_REST_URL && raw.UPSTASH_REDIS_REST_TOKEN);
 
   return {
     telegramBotToken: raw.TELEGRAM_BOT_TOKEN,
     allowedTelegramIds: raw.ALLOWED_TELEGRAM_IDS,
+    adminTelegramIds: raw.ADMIN_TELEGRAM_IDS,
     network,
     rpcUrl,
     walletEncryptionKey: raw.WALLET_ENCRYPTION_KEY,
     swapProvider: raw.SWAP_PROVIDER,
     swapApiBaseUrl: raw.SWAP_API_BASE_URL || '',
     defaultSlippageBps: raw.DEFAULT_SLIPPAGE_BPS,
-    platformFeeBps: raw.PLATFORM_FEE_BPS,
-    platformFeeAddress: raw.PLATFORM_FEE_ADDRESS || '',
+    tradingFeeBps: raw.TRADING_FEE_BPS,
+    displayFeeBps: raw.DISPLAY_FEE_BPS,
+    feeWalletAddress: raw.FEE_WALLET_ADDRESS || '',
+    referralLevelBps: levels,
+    storageBackend: hasRedis ? 'redis' : 'file',
+    upstashUrl: raw.UPSTASH_REDIS_REST_URL || '',
+    upstashToken: raw.UPSTASH_REDIS_REST_TOKEN || '',
     dataFile: raw.DATA_FILE,
     suiCliPath: raw.SUI_CLI_PATH || '',
     coinTemplatePath: raw.COIN_TEMPLATE_PATH || '',
+    launchpadPackageId: raw.LAUNCHPAD_PACKAGE_ID || '',
+    launchpadConfigId: raw.LAUNCHPAD_CONFIG_ID || '',
+    bridgeProvider: raw.BRIDGE_PROVIDER,
+    bridgeApiBaseUrl: raw.BRIDGE_API_BASE_URL || '',
+    rateLimitPerMin: raw.RATE_LIMIT_PER_MIN,
+    maxBuySui: raw.MAX_BUY_SUI,
+    maxSubWallets: raw.MAX_SUBWALLETS,
+    publicUrl: raw.PUBLIC_URL || '',
+    webhookSecret: raw.WEBHOOK_SECRET || '',
+    cronSecret: raw.CRON_SECRET || '',
     logLevel: raw.LOG_LEVEL,
   };
 }

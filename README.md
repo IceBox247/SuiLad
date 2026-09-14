@@ -1,191 +1,213 @@
 # 🚀 SuiPad
 
-A Telegram bot that lets anyone **trade tokens** and **launch new coins** on the
-[Sui](https://sui.io) blockchain — straight from a chat.
+A fast, secure **Telegram trading + launchpad bot for the Sui blockchain**. Trade
+any token, run automated strategies, launch coins on a bonding curve, bundle buys
+across many wallets, bridge across chains, and earn through a 5-level referral
+program — all from Telegram, deployable to **Vercel**.
 
-- 💼 **Non-custodial-per-user wallets** — each Telegram user gets a Sui wallet; private keys are encrypted at rest (AES-256-GCM).
-- 🟢🔴 **Trade any token** — buy/sell routed through the **Cetus DEX Aggregator** (best execution across Cetus, Aftermath, Bluefin, DeepBook, Turbos, FlowX, Kriya, …).
-- 🚀 **Launch a coin** in a guided flow — name, symbol, decimals, supply — and SuiPad compiles & publishes the Move `Coin` module for you.
-- 📊 Balances, live prices, slippage settings, transfers, and trade/launch history.
-
-> ⚠️ **This bot moves real money.** Read the [Security](#-security) section before deploying. Start on **testnet** and with small amounts.
+> ⚠️ **This bot moves real money and custodies signing keys.** Read
+> [Security](#-security) before deploying. Start on **testnet** with small amounts.
 
 ---
 
-## Quick start
+## Features
+
+**Trading**
+- Buy / sell any token via the **Cetus DEX aggregator** (best execution across
+  Cetus, Aftermath, Bluefin, DeepBook, Turbos, FlowX, Kriya, Momentum, …).
+- Live prices, positions & realized PnL, slippage control, MEV-aware execution.
+- **1% trading fee** (charged at 1.1%, shown as 1% — configurable).
+
+**Automation** (runs on a cron tick)
+- **Limit buy / limit sell**, **take-profit**, **stop-loss**.
+- **DCA** — recurring buys on a schedule.
+- **Copy-trade** — mirror a leader wallet's buys, proportionally, capped by budget.
+- **Sniper** — auto-buy the instant a token becomes tradeable.
+- **Watchlist** with price alerts.
+
+**Power tools**
+- **Bundle buy** — buy the same token from many sub-wallets in one click.
+- **Launchpad** — publish a coin and trade it on a **bonding curve** (pump.fun
+  style), with migration to a DEX at a raise threshold.
+- **Bridge** — quote Sui ↔ Ethereum/EVM ↔ Solana via an aggregator (Mayan/deBridge).
+- **5-level referrals** — earn 20% / 5% / 2% / 2% / 1% of the platform fee from
+  your downline.
+
+**UX & ops**
+- Slick inline-keyboard UI + Telegram **Menu button** listing every command.
+- Per-user encrypted wallets, rate limiting, per-user locks, allowlist & bans.
+- Deploys to **Vercel** (webhook + cron) with **Upstash Redis** storage.
+
+---
+
+## Quick start (local)
 
 ```bash
-# 1. Install deps (Node.js 20+)
 npm install
+cp .env.example .env         # set TELEGRAM_BOT_TOKEN + WALLET_ENCRYPTION_KEY
+#   WALLET_ENCRYPTION_KEY:  openssl rand -hex 32
+#   SUI_NETWORK=testnet  (recommended to start)
 
-# 2. Configure
-cp .env.example .env
-#    - TELEGRAM_BOT_TOKEN   from @BotFather
-#    - WALLET_ENCRYPTION_KEY  = $(openssl rand -hex 32)
-#    - SUI_NETWORK=testnet   (recommended to start)
-
-# 3. Verify everything works
-npm run test        # 85 unit tests
-npm run smoke       # live read-only checks (balance + a real Cetus quote)
-
-# 4. Run
-npm start
+npm test                     # 119 unit/integration tests
+npm run smoke                # live read-only checks (balance + real Cetus quote)
+npm start                    # long-polling mode
 ```
 
-Then open your bot in Telegram and send `/start`.
+Open the bot in Telegram → `/start`.
 
 ---
 
-## Commands
+## Deploy to Vercel
 
-| Command | What it does |
-| --- | --- |
-| `/start` | Create/show your wallet and the main menu |
-| `/wallet` | Wallet details, deposit, send, export key |
-| `/balance` | Your token balances |
-| `/buy <coinType>` | Buy a token with SUI |
-| `/sell` | Pick a held token and sell it for SUI |
-| `/price <coinType>` | Live price of a token in SUI |
-| `/send` | Transfer SUI to an address |
-| `/launch` | Guided flow to create & deploy a new coin |
-| `/positions` | Recent trades & launches |
-| `/settings` | Slippage tolerance & preferences |
+The bot runs as two serverless functions: `api/webhook.ts` (Telegram updates) and
+`api/cron.ts` (automation ticks). State lives in **Upstash Redis** (the local JSON
+store is not usable on Vercel's ephemeral filesystem).
 
-A coin type looks like `0xdba3…900e7::usdc::USDC`.
+1. **Create an Upstash Redis DB** → copy `UPSTASH_REDIS_REST_URL` + `_TOKEN`.
+2. **Import the repo into Vercel** and set env vars (see `.env.example`):
+   - `TELEGRAM_BOT_TOKEN`, `WALLET_ENCRYPTION_KEY`
+   - `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`
+   - `SUI_NETWORK`, `SUI_RPC_URL` (a JSON-RPC provider for mainnet)
+   - `SWAP_PROVIDER=cetus`, `FEE_WALLET_ADDRESS`
+   - **`WEBHOOK_SECRET`** (required — see Security), `CRON_SECRET`, `PUBLIC_URL`
+3. **Deploy.** `vercel.json` schedules `/api/cron` every minute (needs Vercel Pro
+   for sub-daily crons).
+4. **Register the webhook + Menu button:**
+   ```bash
+   PUBLIC_URL=https://<you>.vercel.app WEBHOOK_SECRET=<same> npx tsx scripts/set-webhook.ts
+   ```
 
 ---
 
 ## Configuration
 
-All configuration is via environment variables (see [`.env.example`](./.env.example)).
+Every setting is an env var — see [`.env.example`](./.env.example). Highlights:
 
-| Var | Required | Notes |
-| --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | ✅ | From [@BotFather](https://t.me/BotFather). |
-| `WALLET_ENCRYPTION_KEY` | ✅ | ≥32 chars. `openssl rand -hex 32`. **Back this up** — losing it makes every stored wallet unrecoverable. |
-| `SUI_NETWORK` | | `mainnet` \| `testnet` \| `devnet` \| `localnet` \| `custom` (default `testnet`). |
-| `SUI_RPC_URL` | | Override the RPC endpoint. **Recommended for mainnet** (see below). |
-| `ALLOWED_TELEGRAM_IDS` | | Comma-separated allowlist. Empty = open to everyone. |
-| `SWAP_PROVIDER` | | `mock` (offline, dev) \| `cetus` (live routing). Default `mock`. |
-| `DEFAULT_SLIPPAGE_BPS` | | Default slippage in basis points (100 = 1%). |
-| `PLATFORM_FEE_BPS` / `PLATFORM_FEE_ADDRESS` | | Optional operator fee on SUI-funded swaps. |
-| `COIN_TEMPLATE_PATH` | | Enables compiler-free launching (see [Launching](#launching-a-coin)). |
-| `SUI_CLI_PATH` | | Path to the `sui` CLI for compile-based launching. |
+| Var | Purpose |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | From @BotFather. |
+| `WALLET_ENCRYPTION_KEY` | ≥32 bytes; encrypts every stored key. Back it up. |
+| `SUI_NETWORK` / `SUI_RPC_URL` | Network + RPC (use a JSON-RPC provider for mainnet). |
+| `SWAP_PROVIDER` | `mock` (offline) or `cetus` (live, mainnet). |
+| `TRADING_FEE_BPS` / `DISPLAY_FEE_BPS` | Charged (110) vs shown (100). |
+| `FEE_WALLET_ADDRESS` | Where fees are collected. |
+| `REFERRAL_LEVEL_BPS` | `2000,500,200,200,100` (L1–L5 share of the fee). |
+| `UPSTASH_REDIS_REST_URL/_TOKEN` | Storage (auto-selects Redis when present). |
+| `LAUNCHPAD_PACKAGE_ID` | Deployed bonding-curve package (see `move/launchpad`). |
+| `BRIDGE_PROVIDER` | `mayan` / `debridge` / `mock`. |
+| `ALLOWED_TELEGRAM_IDS` / `ADMIN_TELEGRAM_IDS` | Access control. |
+| `WEBHOOK_SECRET` / `CRON_SECRET` | Required to secure the Vercel endpoints. |
 
-### ⚠️ RPC endpoints (important)
-
-Sui's **public** fullnodes (`fullnode.<net>.sui.io`) have **deprecated the classic
-JSON-RPC methods** this bot relies on and now return `Method not found`.
-SuiPad therefore defaults to JSON-RPC-compatible community providers
-(`sui-rpc.publicnode.com`, `sui-testnet-rpc.publicnode.com`).
-
-For production, set `SUI_RPC_URL` to **your own fullnode** or a **dedicated RPC
-provider** (with an API key) for reliability and higher rate limits.
+### RPC note
+Public `*.sui.io` fullnodes have **deprecated JSON-RPC**; defaults point at
+JSON-RPC-compatible providers. Use your own node/provider for mainnet.
 
 ---
 
-## How it works
+## Architecture
 
 ```
-Telegram ──> grammY bot ──> Services
-                              ├── WalletService   (encrypt/decrypt keys, sign)
-                              ├── SuiService       (balances, metadata, transfers, execute)
-                              ├── TradeService ──> SwapProvider (Cetus aggregator | mock)
-                              └── LaunchService ─> Move template → publish
-                              Store (encrypted JSON, atomic writes)
+Telegram ─┬─ long-poll (src/index.ts)        Vercel ─┬─ api/webhook.ts (updates)
+          │                                          └─ api/cron.ts   (automation)
+          ▼
+      grammY bot (src/bot) ── Services (src/app.ts wires everything)
+        ├── WalletService     encrypt/sign, main + sub-wallets
+        ├── TradeService      quote → fee (1.1%) → swap → referral credit → PnL
+        ├── OrderEngine       limit / TP / SL / DCA  (cron tick)
+        ├── CopyTradeService  mirror leader buys       (cron tick)
+        ├── SniperService     auto-buy when tradeable  (cron tick)
+        ├── WatchlistService  price alerts             (cron tick)
+        ├── BundleService     multi-wallet buys
+        ├── ReferralService   5-level fee distribution
+        ├── SecurityService   rate limits, locks, bans, spend caps
+        ├── LaunchService     publish coins (template / Sui CLI)
+        ├── LaunchpadClient   bonding-curve create/buy/sell (move/launchpad)
+        └── BridgeService     cross-chain quotes
+      Repo (src/storage) ── KV backend: Upstash Redis | file, per-user locks
 ```
 
-### Trading
-
-Quotes and swap transactions are produced by a pluggable `SwapProvider`:
-
-- **`cetus`** — uses the [Cetus DEX Aggregator](https://www.cetus.zone/), which
-  splits your order across many Sui DEXes for the best price. Verified live:
-  `1 SUI → ~0.726 USDC` routed via Bluefin at time of writing.
-- **`mock`** — deterministic, offline pricing so you can exercise the whole bot
-  flow (quote → confirm → execute a harmless self-transfer) without a live API.
-
-Slippage protection (`minAmountOut`) is computed from your slippage setting and
-enforced on-chain by the aggregator.
-
-### Launching a coin
-
-`/launch` walks you through name, symbol, decimals and supply, previews the
-generated Move module, and publishes it. Two strategies:
-
-1. **Compiler-free (recommended for a server)** — set `COIN_TEMPLATE_PATH` to a
-   precompiled coin-template bytecode. SuiPad patches the identifiers and
-   metadata directly ([`@mysten/move-bytecode-template`](https://www.npmjs.com/package/@mysten/move-bytecode-template)) — **no Sui CLI needed at runtime**. Build the template once:
-   ```bash
-   npm run build:template   # requires the Sui CLI, run once
-   # writes assets/coin-template.b64 → set COIN_TEMPLATE_PATH=assets/coin-template.b64
-   ```
-2. **Compile on demand** — if the [`sui` CLI](https://docs.sui.io/references/cli)
-   is installed, SuiPad generates a full Move package and runs
-   `sui move build` for each launch. Set `SUI_CLI_PATH` if it isn't on `PATH`.
-
-The generated module (Move 2024 edition) creates the currency, mints the initial
-supply to you, freezes the `CoinMetadata`, and either transfers the `TreasuryCap`
-to you (mint authority kept) or freezes it (fixed supply).
+**Bonding curve** (`src/launch/curve.ts` + `move/launchpad/`): constant-product
+with virtual reserves; all division rounds **pool-protectively** so rounding
+dust can never drain the curve (covered by tests). The Move contract is provided
+ready to compile/audit/deploy.
 
 ---
 
 ## 🔒 Security
 
-This bot **custodies signing keys** for its users. Treat it accordingly:
+- **Keys encrypted at rest** (AES-256-GCM + per-record scrypt key). Plaintext keys
+  never hit storage.
+- **`WALLET_ENCRYPTION_KEY`** is the crown jewel — store it in a secret manager;
+  losing it makes wallets unrecoverable, leaking it compromises all wallets.
+- **Webhook fails closed**: `api/webhook.ts` refuses to run without `WEBHOOK_SECRET`
+  and validates Telegram's secret-token header, preventing forged updates that
+  could impersonate users. Always set it.
+- **Per-user locks** serialize every balance/order mutation (no lost updates or
+  double-spends across concurrent webhook + cron invocations).
+- **Rate limiting, spend caps, allowlist & bans** guard against abuse.
+- **Referral loop protection**: self-referral and cycles are rejected.
+- **Curve math is drain-safe** (pool-protective rounding, tested).
+- Referral earnings accrue to a ledger and are paid out by the operator — the bot
+  never auto-transfers from the fee wallet.
 
-- **Private keys are encrypted at rest** with AES-256-GCM; a per-record scrypt key
-  is derived from `WALLET_ENCRYPTION_KEY`. Plaintext keys never hit the store.
-- **`WALLET_ENCRYPTION_KEY` is the crown jewel.** Store it in a secret manager,
-  not in the repo. If it leaks, all wallets are compromised. If it's lost, all
-  wallets are unrecoverable.
-- The bot process can sign transactions for any user it holds a key for — run it
-  on trusted infrastructure, restrict `ALLOWED_TELEGRAM_IDS`, and keep the data
-  file (`DATA_FILE`) private and backed up.
-- **Use burner wallets / small amounts.** Recommend the same to your users.
-- The JSON store is fine for a single process; for scale, swap it for SQLite or
-  Postgres behind the same `Store` interface.
-
-Nothing here is financial advice. You are responsible for the funds and tokens
-you and your users move.
+Use burner wallets / small amounts; tell your users the same. Nothing here is
+financial advice — you are responsible for the funds you and your users move.
 
 ---
 
 ## Testing & verification
 
 ```bash
-npm run lint    # tsc --noEmit (strict)
-npm run test    # 85 unit tests (crypto, encoding, quoting, store, launch templating, …)
-npm run smoke   # live: reads a testnet balance, mainnet metadata, and a real Cetus quote
+npm run lint     # strict tsc --noEmit
+npm test         # 119 tests
+npm run smoke    # live: testnet balance, mainnet metadata, real Cetus quote
 ```
 
-What's covered vs. what needs your keys:
+**Verified here:** config, key encryption, wallet/sub-wallet lifecycle, unit &
+slippage math, the storage layer + concurrency locks, fee split, **5-level
+referral distribution**, **bonding-curve math** (incl. drain-safety), the **order
+engine** (limit/TP/SL/DCA firing), copy-trade math, bridge quoting/parsing, Move
+templating, and a **live Cetus mainnet quote**. Full app wiring (bot + all
+services + a cron tick) boots cleanly.
 
-- ✅ **Unit-tested & live-verified**: config, key encryption, wallet gen/import,
-  unit conversion & slippage math, the storage layer, the swap-quote pipeline
-  (including a **live** Cetus mainnet quote), Move source generation, and publish
-  result parsing.
-- 🔑 **Needs your funded wallet to exercise on-chain**: executing real swaps and
-  publishing a coin (both build validated transactions but require gas + signing).
-  Start on testnet.
+**Requires your keys/funds/deploy to exercise on-chain** (build validated
+transactions; test on testnet first):
+- Real swap / launch / bundle / snipe / copy execution (needs a funded wallet).
+- The **bonding-curve launchpad** package must be compiled, **audited**, and
+  deployed with the Sui CLI, then set `LAUNCHPAD_PACKAGE_ID`.
+- **Bridging** execution goes through the provider/relayer; quotes are wired,
+  smoke-test against the live provider before mainnet.
+
+---
+
+## Launching the bonding-curve package
+
+```bash
+# One-time, on a machine with the Sui CLI + a funded deployer:
+cd move/launchpad && sui client publish --gas-budget 200000000
+# Set the resulting package id:
+#   LAUNCHPAD_PACKAGE_ID=0x...
+```
+Have the Move contract audited before mainnet use.
 
 ---
 
 ## Project layout
 
 ```
+api/                webhook + cron serverless entrypoints (Vercel)
+move/launchpad/     bonding-curve Move package
 src/
-  config.ts            env parsing & validation (zod)
-  crypto/encryption.ts AES-256-GCM secret storage
-  storage/             encrypted JSON store (atomic writes)
-  sui/                 client, wallet keypairs, balances, transfers, execute
-  trade/               SwapProvider interface, slippage math, Cetus + mock providers
-  launch/              Move source generator, bytecode patcher, publisher
-  services/            WalletService (key lifecycle)
-  bot/                 grammY bot, commands, flows, keyboards
-  index.ts             entrypoint
-scripts/
-  smoke.ts             live read-only checks
-  build-coin-template.ts  build the compiler-free launch template (needs sui CLI)
-test/                  vitest suite
+  app.ts            wires all services (shared by CLI + Vercel)
+  config.ts         env parsing & validation (zod)
+  bot/              grammY bot, slick UI, flows, safety middleware
+  crypto/           AES-256-GCM secret storage
+  storage/          KV backend (Redis|file) + per-user-locked Repo
+  sui/              client, wallets, balances, transfers, tx exec
+  trade/            swap providers (Cetus|mock), fees, price oracle
+  services/         wallet, referral, security, orders, copy, sniper, watchlist, bundle
+  launch/           coin templating, curve math, launchpad client
+  bridge/           cross-chain quote providers
+scripts/            smoke, template build, webhook setup
+test/               vitest suite (119 tests)
 ```
