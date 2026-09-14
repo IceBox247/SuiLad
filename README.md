@@ -158,10 +158,16 @@ financial advice — you are responsible for the funds you and your users move.
 ## Testing & verification
 
 ```bash
-npm run lint     # strict tsc --noEmit
-npm test         # 119 tests
-npm run smoke    # live: testnet balance, mainnet metadata, real Cetus quote
+npm run lint         # strict tsc --noEmit
+npm test             # 123 tests
+npm run smoke        # live: testnet balance, mainnet metadata, real Cetus quote
+E2E_SUI_KEY=... npm run e2e:testnet   # real on-chain testnet transfer + trade pipeline
 ```
+
+**On-chain referral payouts:** set `FEE_WALLET_SECRET` and users' `/referral → Claim`
+sends SUI from the fee wallet to their address. The amount is reserved under a
+per-user lock before the transfer and refunded if it fails (no lost balances,
+no double-claims). Without the secret, earnings stay in the ledger for manual payout.
 
 **Verified here:** config, key encryption, wallet/sub-wallet lifecycle, unit &
 slippage math, the storage layer + concurrency locks, fee split, **5-level

@@ -53,6 +53,10 @@ const RawSchema = z.object({
   TRADING_FEE_BPS: z.coerce.number().int().min(0).max(1000).default(110), // actually charged (1.1%)
   DISPLAY_FEE_BPS: z.coerce.number().int().min(0).max(1000).default(100), // shown to users (1%)
   FEE_WALLET_ADDRESS: z.string().optional().or(z.literal('')),
+  // Secret key of the fee wallet — enables on-chain referral payouts (/referral → Claim).
+  FEE_WALLET_SECRET: z.string().optional().or(z.literal('')),
+  // Minimum claimable referral balance in SUI (covers gas; avoids dust claims).
+  MIN_REFERRAL_CLAIM_SUI: z.coerce.number().min(0).default(0.05),
   REFERRAL_LEVEL_BPS: csvNums([2000, 500, 200, 200, 100]), // % of fee to L1..L5
 
   // Storage
@@ -96,6 +100,8 @@ export interface AppConfig {
   tradingFeeBps: number;
   displayFeeBps: number;
   feeWalletAddress: string;
+  feeWalletSecret: string;
+  minReferralClaimSui: number;
   referralLevelBps: number[];
   storageBackend: 'redis' | 'file';
   upstashUrl: string;
@@ -155,6 +161,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     tradingFeeBps: raw.TRADING_FEE_BPS,
     displayFeeBps: raw.DISPLAY_FEE_BPS,
     feeWalletAddress: raw.FEE_WALLET_ADDRESS || '',
+    feeWalletSecret: raw.FEE_WALLET_SECRET || '',
+    minReferralClaimSui: raw.MIN_REFERRAL_CLAIM_SUI,
     referralLevelBps: levels,
     storageBackend: hasRedis ? 'redis' : 'file',
     upstashUrl: raw.UPSTASH_REDIS_REST_URL || '',

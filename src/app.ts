@@ -8,6 +8,7 @@ import { createSwapProvider } from './trade/factory.js';
 import { PriceOracle } from './trade/priceOracle.js';
 import { WalletService } from './services/walletService.js';
 import { ReferralService } from './services/referralService.js';
+import { PayoutService } from './services/payoutService.js';
 import { SecurityService } from './services/security.js';
 import { TradeService } from './trade/tradeService.js';
 import { OrderEngine, type Notifier } from './services/orderEngine.js';
@@ -42,6 +43,9 @@ export async function buildApp(config: AppConfig): Promise<App> {
 
   const wallet = new WalletService(repo, config.walletEncryptionKey, config.maxSubWallets);
   const referral = new ReferralService(repo, config.referralLevelBps);
+  const payout = config.feeWalletSecret
+    ? new PayoutService(repo, sui, config.feeWalletSecret, BigInt(Math.round(config.minReferralClaimSui * 1e9)))
+    : undefined;
   const security = new SecurityService(repo, {
     rateLimitPerMin: config.rateLimitPerMin,
     maxBuySui: config.maxBuySui,
@@ -71,7 +75,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
   const bridge = new BridgeService(createBridgeProvider(config));
 
   const services: Services = {
-    config, repo, sui, oracle, wallet, trade, referral, security,
+    config, repo, sui, oracle, wallet, trade, referral, payout, security,
     orders, copy, sniper, watchlist, bundle, launch, launchpad, bridge,
     sessions: new SessionStore(),
     pending: new Map(),

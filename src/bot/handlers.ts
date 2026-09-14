@@ -746,10 +746,34 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     await ctx.reply('Enter slippage % (e.g. 1):');
   });
   cb('ref_claim', async (ctx) => {
-    const amt = await ctx.services.referral.claim(tgId(ctx));
-    if (amt <= 0n) { await ctx.reply('Nothing to claim yet.', { reply_markup: backMenu() }); return; }
+    const id = tgId(ctx);
+    const summary = await ctx.services.referral.summary(id);
+    if (!summary || summary.unclaimedMist <= 0n) {
+      await ctx.reply('Nothing to claim yet.', { reply_markup: backMenu() });
+      return;
+    }
+    if (ctx.services.payout) {
+      // Idempotency: block double-taps while a payout is in flight.
+      if (!(await ctx.services.security.firstSeen(`claim:${id}`, 60))) {
+        await ctx.reply('A claim is already being processed. Please wait a moment.', { reply_markup: backMenu() });
+        return;
+      }
+      await ctx.reply('⏳ Sending your referral payout…');
+      const result = await ctx.services.payout.claim(id);
+      if (!result) {
+        const min = ctx.services.config.minReferralClaimSui;
+        await ctx.reply(`Minimum claim is ${min} SUI. Keep earning and try again.`, { reply_markup: backMenu() });
+        return;
+      }
+      await ctx.reply(
+        `✅ Paid ${formatAmount(result.amountMist, 9)} SUI to your wallet.\n${link('View transaction', ctx.services.sui.txUrl(result.digest))}`,
+        { parse_mode: 'HTML', reply_markup: mainMenu() },
+      );
+      return;
+    }
+    // No payout wallet configured: earnings stay in the ledger for manual payout.
     await ctx.reply(
-      `✅ Claim recorded for ${formatAmount(amt, 9)} SUI. Payouts are processed by the operator to your wallet.`,
+      `You have ${formatAmount(summary.unclaimedMist, 9)} SUI in referral earnings. Automatic payouts aren’t enabled yet — the operator will process it to your wallet.`,
       { reply_markup: backMenu() },
     );
   });

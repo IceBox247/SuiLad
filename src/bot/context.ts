@@ -5,6 +5,7 @@ import type { SuiService } from '../sui/service.js';
 import type { WalletService } from '../services/walletService.js';
 import type { TradeService } from '../trade/tradeService.js';
 import type { ReferralService } from '../services/referralService.js';
+import type { PayoutService } from '../services/payoutService.js';
 import type { SecurityService } from '../services/security.js';
 import type { OrderEngine } from '../services/orderEngine.js';
 import type { CopyTradeService } from '../services/copyTrade.js';
@@ -25,6 +26,8 @@ export interface Services {
   wallet: WalletService;
   trade: TradeService;
   referral: ReferralService;
+  /** On-chain referral payouts; present only when FEE_WALLET_SECRET is set. */
+  payout?: PayoutService;
   security: SecurityService;
   orders: OrderEngine;
   copy: CopyTradeService;
