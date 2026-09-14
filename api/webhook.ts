@@ -1,27 +1,68 @@
-import { webhookCallback } from 'grammy';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Update } from 'grammy/types';
 import { getApp } from './_app.js';
+import { logger } from '../src/logger.js';
 
 /**
- * Telegram webhook endpoint for Vercel. Set the webhook to
- *   https://<your-app>.vercel.app/api/webhook
- * with a secret token equal to WEBHOOK_SECRET (see scripts/set-webhook.ts).
+ * Telegram webhook endpoint for Vercel.
  *
- * SECURITY: this endpoint FAILS CLOSED. Without WEBHOOK_SECRET configured,
- * anyone who knows the URL could POST forged Telegram updates (spoofing any
- * user's telegram id) and drive that user's wallet. We therefore refuse to
- * process updates unless a secret token is configured AND matches.
+ * We deliberately do NOT use grammY's stream-reading webhook adapter here:
+ * Vercel's Node runtime pre-parses the JSON body, so the stream is already
+ * consumed and the adapter would hang / never reply. Instead we read the update
+ * from the parsed `req.body` (falling back to reading the stream locally) and
+ * hand it to `bot.handleUpdate` directly.
+ *
+ * SECURITY: fails closed — requires WEBHOOK_SECRET and validates Telegram's
+ * `X-Telegram-Bot-Api-Secret-Token` header before processing anything.
  */
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const { bot, services } = await getApp();
+
   const secret = services.config.webhookSecret;
   if (!secret) {
     res.statusCode = 500;
     res.end('WEBHOOK_SECRET is not configured; refusing to process webhook updates.');
     return;
   }
-  // grammy validates the X-Telegram-Bot-Api-Secret-Token header against `secret`
-  // and rejects mismatches with 401 before any update is processed.
-  const callback = webhookCallback(bot, 'http', { secretToken: secret });
-  return callback(req, res);
+  const header = req.headers['x-telegram-bot-api-secret-token'];
+  if (header !== secret) {
+    res.statusCode = 401;
+    res.end('unauthorized');
+    return;
+  }
+
+  let update: Update | undefined;
+  const parsed = (req as IncomingMessage & { body?: unknown }).body;
+  if (parsed && typeof parsed === 'object') {
+    update = parsed as Update;
+  } else if (typeof parsed === 'string' && parsed) {
+    update = JSON.parse(parsed) as Update;
+  } else {
+    update = await readJsonBody(req);
+  }
+
+  // Always ACK Telegram quickly; process the update, log failures.
+  res.statusCode = 200;
+  res.end('ok');
+  if (!update) return;
+  try {
+    await bot.handleUpdate(update);
+  } catch (err) {
+    logger.error('handleUpdate failed', { error: (err as Error).message });
+  }
+}
+
+function readJsonBody(req: IncomingMessage): Promise<Update | undefined> {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (c) => (data += c));
+    req.on('end', () => {
+      try {
+        resolve(data ? (JSON.parse(data) as Update) : undefined);
+      } catch {
+        resolve(undefined);
+      }
+    });
+    req.on('error', () => resolve(undefined));
+  });
 }
