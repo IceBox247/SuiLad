@@ -27,9 +27,12 @@ export class ChartService {
       if (res.ok) {
         const json = (await res.json()) as { data?: { attributes?: { ohlcv_list?: number[][] } } };
         const list = json.data?.attributes?.ohlcv_list ?? [];
-        // ohlcv_list is newest-first: [ts, o, h, l, c, v]. Use closes, oldest-first.
-        const closes = list.map((r) => r[4]!).reverse().filter((n) => Number.isFinite(n));
-        if (closes.length >= 3) url = buildQuickChartUrl(closes);
+        // ohlcv_list is newest-first: [ts, o, h, l, c, v]. Candles, oldest-first.
+        const candles = list
+          .map((r) => ({ o: r[1]!, h: r[2]!, l: r[3]!, c: r[4]! }))
+          .reverse()
+          .filter((k) => [k.o, k.h, k.l, k.c].every(Number.isFinite));
+        if (candles.length >= 3) url = buildCandlestickUrl(candles);
       }
     } catch (err) {
       logger.debug('chart fetch failed', { pool, e: (err as Error).message });
@@ -39,30 +42,28 @@ export class ChartService {
   }
 }
 
-function buildQuickChartUrl(closes: number[]): string {
-  const up = closes[closes.length - 1]! >= closes[0]!;
-  const color = up ? '#22c55e' : '#ef4444';
+function buildCandlestickUrl(candles: { o: number; h: number; l: number; c: number }[]): string {
+  const data = candles.map((k, x) => ({ x, o: k.o, h: k.h, l: k.l, c: k.c }));
   const config = {
-    type: 'line',
+    type: 'candlestick',
     data: {
-      labels: closes.map(() => ''),
       datasets: [
         {
-          data: closes,
-          borderColor: color,
-          backgroundColor: up ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
-          borderWidth: 2,
-          pointRadius: 0,
-          fill: true,
-          tension: 0.35,
+          label: '',
+          data,
+          color: { up: '#22c55e', down: '#ef4444', unchanged: '#8b949e' },
+          borderColor: { up: '#22c55e', down: '#ef4444', unchanged: '#8b949e' },
         },
       ],
     },
     options: {
-      plugins: { legend: { display: false } },
-      scales: { x: { display: false }, y: { display: false } },
+      plugins: { legend: { display: false }, title: { display: false } },
+      scales: {
+        x: { display: false },
+        y: { ticks: { color: '#8b949e' }, grid: { color: 'rgba(139,148,158,0.12)' } },
+      },
     },
   };
   const c = encodeURIComponent(JSON.stringify(config));
-  return `https://quickchart.io/chart?w=640&h=280&bkg=%230d1117&c=${c}`;
+  return `https://quickchart.io/chart?v=3&w=640&h=300&bkg=%230d1117&c=${c}`;
 }

@@ -63,13 +63,24 @@ async function showPositions(ctx: BotContext): Promise<void> {
   const holdings = await ctx.services.sui.getHoldings(address).catch(() => []);
   const u = await ctx.services.repo.getUser(id);
   const lines: string[] = ['📊 <b>Positions</b>', ''];
+  const kb = new InlineKeyboard();
+  // Non-SUI tokens become tappable buttons that open the full token card.
+  const tokens = holdings.filter((h) => h.coinType !== SUI_TYPE);
+  await ctx.services.repo.setMeta(`toklist:${id}`, JSON.stringify(tokens.map((t) => t.coinType))).catch(() => {});
+
   if (holdings.length === 0) lines.push('<i>No balances yet. Fund your wallet with SUI.</i>');
   for (const h of holdings) {
     const pos = u?.positions.find((p) => p.coinType === h.coinType);
-    const pnl = pos ? ` • realized PnL ${formatAmount(BigInt(pos.realizedPnlMist), 9)} SUI` : '';
+    const pnl = pos && BigInt(pos.realizedPnlMist) !== 0n ? ` • PnL ${formatAmount(BigInt(pos.realizedPnlMist), 9)} SUI` : '';
     lines.push(`• <b>${esc(h.symbol)}</b>: ${esc(h.formatted)}${esc(pnl)}`);
   }
-  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: backMenu() });
+  if (tokens.length > 0) lines.push('', '👇 Tap a token for full details, chart & trade:');
+  tokens.forEach((t, i) => {
+    if (i % 2 === 0) kb.row();
+    kb.text(`${t.symbol} • ${t.formatted}`, `tok:${i}`);
+  });
+  kb.row().text('🔄 Refresh', 'positions').text('⬅️ Menu', 'menu');
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb });
 }
 
 async function showSettings(ctx: BotContext): Promise<void> {
@@ -166,26 +177,29 @@ async function promptBuyAmount(ctx: BotContext, coinType: string, edit = false):
   ]);
 
   const priceSui = info?.priceNative || priceNum || 0;
-  const lines: string[] = [`🪙 <b>${esc(info?.name ?? meta.name)}</b> — <b>${esc(info?.symbol ?? meta.symbol)}</b>`];
+  const lines: string[] = [`🪙 <b>${esc(info?.name ?? meta.name)}</b>  •  <b>$${esc(info?.symbol ?? meta.symbol)}</b>`, ''];
 
   if (info) {
     lines.push(
-      `💵 Price: <b>$${info.priceUsd.toPrecision(4)}</b>  (${priceSui.toPrecision(4)} SUI)`,
-      `📊 MC: <b>${formatUsd(info.mcUsd)}</b>   💧 Liq: <b>${formatUsd(info.liquidityUsd)}</b>`,
-      `🌊 Pooled: <b>${info.pooledSui.toLocaleString('en-US', { maximumFractionDigits: 0 })} SUI</b>   🏦 ${esc(info.dexId)}`,
-      `📈 Vol 24h: <b>${formatUsd(info.volume24)}</b>   🔁 <b>${info.buys24}</b>🟢/<b>${info.sells24}</b>🔴`,
-      `⏱ 1h ${formatPct(info.change1h)}  •  6h ${formatPct(info.change6h)}  •  24h ${formatPct(info.change24h)}`,
+      `💵 <b>$${info.priceUsd.toPrecision(4)}</b>  ·  ${priceSui.toPrecision(4)} SUI`,
+      '',
+      `📊 MC:  <b>${formatUsd(info.mcUsd)}</b>`,
+      `💧 Liq: <b>${formatUsd(info.liquidityUsd)}</b>  ·  🌊 ${info.pooledSui.toLocaleString('en-US', { maximumFractionDigits: 0 })} SUI`,
+      `📈 Vol 24h: <b>${formatUsd(info.volume24)}</b>  ·  🏦 ${esc(info.dexId)}`,
+      `🔁 24h: <b>${info.buys24}</b> 🟢  /  <b>${info.sells24}</b> 🔴`,
+      '',
+      `⏱ ${formatPct(info.change1h)} <i>1h</i>   ·   ${formatPct(info.change6h)} <i>6h</i>   ·   ${formatPct(info.change24h)} <i>24h</i>`,
     );
   } else {
     lines.push(
-      priceSui > 0 ? `📈 Price: <b>${priceSui.toPrecision(6)} SUI</b>` : '📈 Price: <i>no pool / liquidity yet</i>',
-      '<i>No market data yet (very new or not on a DEX).</i>',
+      priceSui > 0 ? `📈 <b>${priceSui.toPrecision(6)} SUI</b>` : '📈 <i>no pool / liquidity yet</i>',
+      '<i>No market data yet — very new or not on a DEX.</i>',
     );
   }
 
-  lines.push(code(coinType));
-  if (held > 0n) lines.push(`👜 You hold: <b>${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}</b>`);
-  lines.push('', `💰 Your SUI: <b>${esc(formatAmount(suiBal, 9))}</b>`, '', '👇 Tap an amount to buy, or type a custom amount:');
+  lines.push('', `📋 ${code(coinType)}`);
+  if (held > 0n) lines.push('', `👜 Holding: <b>${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}</b>`);
+  lines.push('', `💰 Balance: <b>${esc(formatAmount(suiBal, 9))} SUI</b>`, '', '👇 <b>Tap an amount to buy</b> — or type a custom amount:');
   const text = lines.join('\n');
 
   const net = ctx.services.config.network === 'mainnet' ? 'mainnet' : ctx.services.config.network;
@@ -293,8 +307,11 @@ async function startSell(ctx: BotContext): Promise<void> {
     await ctx.reply('🔴 No non-SUI tokens to sell.', { reply_markup: backMenu() });
     return;
   }
+  const list = holdings.slice(0, 20);
+  // Use index refs (Sui coin types exceed Telegram's 64-byte callback_data limit).
+  await ctx.services.repo.setMeta(`selllist:${id}`, JSON.stringify(list.map((h) => h.coinType))).catch(() => {});
   const kb = new InlineKeyboard();
-  for (const h of holdings.slice(0, 20)) kb.text(`${h.symbol} (${h.formatted})`, `sell:${h.coinType}`).row();
+  list.forEach((h, i) => kb.text(`${h.symbol} (${h.formatted})`, `sl:${i}`).row());
   kb.text('⬅️ Back', 'menu');
   await ctx.reply('🔴 <b>Sell</b> — pick a token:', { parse_mode: 'HTML', reply_markup: kb });
 }
@@ -1010,12 +1027,33 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     await ctx.reply(`🔑 <b>Private key</b> (keep secret!):\n${code(secret)}`, { parse_mode: 'HTML', reply_markup: backMenu() });
   });
 
-  bot.callbackQuery(/^sell:(.+)$/, guard(async (ctx) => {
+  bot.callbackQuery(/^sl:(\d+)$/, guard(async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
-    const coinType = ctx.match![1]!;
+    const idx = Number(ctx.match![1]);
+    const raw = await ctx.services.repo.getMeta(`selllist:${tgId(ctx)}`);
+    const list = raw ? (JSON.parse(raw) as string[]) : [];
+    const coinType = list[idx];
+    if (!coinType) {
+      await ctx.reply('That list expired — open Sell again.', { reply_markup: backMenu() });
+      return;
+    }
     const meta = await ctx.services.sui.getCoinMeta(coinType);
     ctx.services.sessions.set(tgId(ctx), { flow: 'sell_amount', data: { coinType } });
-    await ctx.reply(`How much <b>${esc(meta.symbol)}</b> to sell?`, { parse_mode: 'HTML' });
+    await ctx.reply(`🔴 How much <b>${esc(meta.symbol)}</b> to sell? (amount, or a % like <code>50%</code>)`, { parse_mode: 'HTML' });
+  }));
+
+  // Tap a token in Positions to open its full scan card.
+  bot.callbackQuery(/^tok:(\d+)$/, guard(async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const idx = Number(ctx.match![1]);
+    const raw = await ctx.services.repo.getMeta(`toklist:${tgId(ctx)}`);
+    const list = raw ? (JSON.parse(raw) as string[]) : [];
+    const coinType = list[idx];
+    if (!coinType) {
+      await ctx.reply('That list expired — open Positions again.', { reply_markup: backMenu() });
+      return;
+    }
+    await promptBuyAmount(ctx, coinType);
   }));
 
   // Quick-buy buttons on the token card: qb:<amount> | qb:x (custom) | qb:ref (refresh)
