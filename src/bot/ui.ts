@@ -13,8 +13,10 @@ export function link(text: string, url: string): string {
 }
 
 /** The main dashboard keyboard — the "menu" users navigate from. */
-export function mainMenu(): InlineKeyboard {
+export function mainMenu(activeChainLabel = 'Sui'): InlineKeyboard {
   return new InlineKeyboard()
+    .text(`🌐 Chain: ${activeChainLabel}`, 'chain')
+    .row()
     .text('🟢 Buy', 'buy')
     .text('🔴 Sell', 'sell')
     .row()
@@ -43,6 +45,22 @@ export function backMenu(): InlineKeyboard {
   return new InlineKeyboard().text('⬅️ Back to menu', 'menu');
 }
 
+/** Chain picker. `chains` is [{id,label,live}]; live=false shows "soon". */
+export function chainPicker(
+  chains: { id: string; label: string; live: boolean }[],
+  active: string,
+): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  chains.forEach((c, i) => {
+    if (i % 2 === 0) kb.row();
+    const mark = c.id === active ? '✅ ' : '';
+    const soon = c.live ? '' : ' (soon)';
+    kb.text(`${mark}${c.label}${soon}`, c.live ? `chain:set:${c.id}` : 'chain:soon');
+  });
+  kb.row().text('⬅️ Back', 'menu');
+  return kb;
+}
+
 export function confirmCancel(confirmData: string): InlineKeyboard {
   return new InlineKeyboard().text('✅ Confirm', confirmData).text('❌ Cancel', 'cancel');
 }
@@ -65,17 +83,20 @@ export function addrLabel(address: string): string {
 
 export function homeText(address: string, suiBalance: string): string {
   return [
-    '🚀 <b>SuiPad</b> — trade &amp; launch on Sui',
+    '🚀 <b>SuiPad</b> — multi-chain trading &amp; launchpad',
+    '🌊 Trading on <b>Sui</b> · tap 🌐 to switch chains (Solana live)',
     '',
     `💼 Wallet: ${code(address)}`,
     `💰 Balance: <b>${esc(suiBalance)} SUI</b>`,
     '',
-    'Pick an action below. Tap the <b>Menu</b> button anytime for all commands.',
+    'Paste a token to trade, or pick an action below.',
   ].join('\n');
 }
 
 export const HELP = [
   '<b>SuiPad — Commands</b>',
+  '',
+  '🌐 <b>Multi-chain</b>: trade on Sui &amp; Solana (more chains rolling out). Tap 🌐 <b>Chain</b> on the menu to switch; each chain has its own wallet.',
   '',
   '<b>Trading</b>',
   '/buy <code>&lt;coin&gt;</code> — buy a token with SUI',

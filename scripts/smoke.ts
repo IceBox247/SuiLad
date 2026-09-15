@@ -44,6 +44,19 @@ async function main() {
       `(min ${formatAmount(quote.minAmountOut, 6)}), route: ${quote.routeLabel}`,
   );
 
+  // 5. Multi-chain: live Solana routing quote via Jupiter (0.1 SOL -> USDC).
+  const { SolanaAdapter } = await import('../src/chains/solana.js');
+  const sol = new SolanaAdapter();
+  const solWallet = await sol.createWallet();
+  console.log('✓ generated Solana wallet:', solWallet.address);
+  const SOL_MINT = 'So11111111111111111111111111111111111111112';
+  const USDC_SPL = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const solQuote = await sol.quote({ inputToken: SOL_MINT, outputToken: USDC_SPL, amount: '100000000', slippageBps: 100, owner: solWallet.address });
+  console.log(
+    `✓ live Jupiter quote: 0.1 SOL -> ${formatAmount(BigInt(solQuote.outAmount), 6)} USDC ` +
+      `(min ${formatAmount(BigInt(solQuote.minOut), 6)}), route: ${solQuote.route}`,
+  );
+
   console.log('\nAll live checks passed.');
 }
 

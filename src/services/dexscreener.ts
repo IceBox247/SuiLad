@@ -50,9 +50,14 @@ export class DexScreener {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  async token(coinType: string): Promise<TokenInfo | null> {
+  /**
+   * @param coinType Token address / mint / coin-type.
+   * @param chain    DexScreener chainId to filter on (default "sui").
+   */
+  async token(coinType: string, chain = 'sui'): Promise<TokenInfo | null> {
+    const key = `${chain}:${coinType}`;
     const now = Date.now();
-    const cached = this.cache.get(coinType);
+    const cached = this.cache.get(key);
     if (cached && now - cached.at < this.ttlMs) return cached.data;
 
     let data: TokenInfo | null = null;
@@ -62,15 +67,15 @@ export class DexScreener {
       });
       if (res.ok) {
         const json = (await res.json()) as { pairs?: DsPair[] };
-        const suiPairs = (json.pairs ?? []).filter((p) => p.chainId === 'sui');
+        const pairs = (json.pairs ?? []).filter((p) => p.chainId === chain);
         // Pick the deepest-liquidity pair as the reference.
-        const best = suiPairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+        const best = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
         if (best) data = normalize(best);
       }
     } catch (err) {
-      logger.debug('dexscreener fetch failed', { coinType, e: (err as Error).message });
+      logger.debug('dexscreener fetch failed', { coinType, chain, e: (err as Error).message });
     }
-    this.cache.set(coinType, { at: now, data });
+    this.cache.set(key, { at: now, data });
     return data;
   }
 }
