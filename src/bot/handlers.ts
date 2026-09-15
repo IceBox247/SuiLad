@@ -30,11 +30,19 @@ async function ensureWallet(ctx: BotContext): Promise<string> {
   return id;
 }
 
-async function home(ctx: BotContext): Promise<void> {
+async function home(ctx: BotContext, edit = false): Promise<void> {
   const id = await ensureWallet(ctx);
   const address = (await ctx.services.wallet.getAddress(id))!;
   const bal = await ctx.services.sui.getBalance(address, SUI_TYPE).catch(() => 0n);
-  await ctx.reply(homeText(address, formatAmount(bal, 9)), { parse_mode: 'HTML', reply_markup: mainMenu() });
+  const text = homeText(address, formatAmount(bal, 9));
+  const opts = { parse_mode: 'HTML' as const, reply_markup: mainMenu(), link_preview_options: { is_disabled: true } };
+  if (edit && ctx.callbackQuery?.message) {
+    await ctx.editMessageText(text, opts).catch((e) => {
+      if (!/message is not modified/i.test((e as Error).message)) throw e;
+    });
+    return;
+  }
+  await ctx.reply(text, opts);
 }
 
 // --- Wallet / positions / settings -----------------------------------------
@@ -122,10 +130,11 @@ async function showSubwallets(ctx: BotContext): Promise<void> {
 const QUICK_BUY_SUI = ['0.5', '1', '2', '5'];
 
 /**
- * Render a rich token card (price, market cap, liquidity, volume, price change,
- * your holdings) with quick-buy buttons — the moment a coin type is pasted.
+ * Render a rich token card (chart image + price, market cap, liquidity, volume,
+ * price change, holdings) with quick-buy buttons. `edit=true` updates the
+ * existing message in place (used by Refresh) instead of posting a new one.
  */
-async function promptBuyAmount(ctx: BotContext, coinType: string): Promise<void> {
+async function promptBuyAmount(ctx: BotContext, coinType: string, edit = false): Promise<void> {
   const id = tgId(ctx);
   // Remember which token this user is looking at (survives serverless cold
   // starts, so the quick-buy buttons work), and set up the custom-amount flow.
@@ -137,10 +146,11 @@ async function promptBuyAmount(ctx: BotContext, coinType: string): Promise<void>
     ctx.services.wallet.getAddress(id),
     ctx.services.dex.token(coinType).catch(() => null),
   ]);
-  const [priceNum, suiBal, held] = await Promise.all([
+  const [priceNum, suiBal, held, chartUrl] = await Promise.all([
     ctx.services.oracle.priceNumber(coinType).catch(() => null),
     ctx.services.sui.getBalance(address!, SUI_TYPE).catch(() => 0n),
     ctx.services.sui.getBalance(address!, coinType).catch(() => 0n),
+    info?.pairAddress ? ctx.services.chart.chartUrl(info.pairAddress).catch(() => null) : Promise.resolve(null),
   ]);
 
   const priceSui = info?.priceNative || priceNum || 0;
@@ -164,6 +174,7 @@ async function promptBuyAmount(ctx: BotContext, coinType: string): Promise<void>
   lines.push(code(coinType));
   if (held > 0n) lines.push(`👜 You hold: <b>${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}</b>`);
   lines.push('', `💰 Your SUI: <b>${esc(formatAmount(suiBal, 9))}</b>`, '', '👇 Tap an amount to buy, or type a custom amount:');
+  const text = lines.join('\n');
 
   const net = ctx.services.config.network === 'mainnet' ? 'mainnet' : ctx.services.config.network;
   const suiscan = `https://suiscan.xyz/${net}/coin/${coinType}`;
@@ -174,11 +185,54 @@ async function promptBuyAmount(ctx: BotContext, coinType: string): Promise<void>
   kb.text(`🟢 ${QUICK_BUY_SUI[2]} SUI`, `qb:${QUICK_BUY_SUI[2]}`).text(`🟢 ${QUICK_BUY_SUI[3]} SUI`, `qb:${QUICK_BUY_SUI[3]}`).row();
   kb.text('✏️ Buy X', 'qb:x').text('🔴 Sell', 'qb:sell').row();
   kb.text('🎯 Limit', 'qb:lim').text(`⚙️ Slippage ${ctx.services.config.defaultSlippageBps / 100}%`, 'set_slippage').row();
-  const links = kb.url('📊 Chart', info?.url ?? suiscan).url('🔎 Suiscan', suiscan).url('𝕏 Search', xSearch);
-  links.row();
+  kb.url('📊 Chart', info?.url ?? suiscan).url('🔎 Suiscan', suiscan).url('𝕏 Search', xSearch).row();
   kb.text('🔄 Refresh', 'qb:ref').text('⬅️ Menu', 'menu');
 
-  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } });
+  await renderCard(ctx, { text, kb, chartUrl, edit });
+}
+
+/**
+ * Send the card as a chart photo (with caption) when an image is available,
+ * else as text. On `edit`, update the existing message in place (Refresh) —
+ * never post a new one. Ignores the harmless "message is not modified" error.
+ */
+async function renderCard(
+  ctx: BotContext,
+  opts: { text: string; kb: InlineKeyboard; chartUrl: string | null; edit: boolean },
+): Promise<void> {
+  const { text, kb, chartUrl, edit } = opts;
+  try {
+    if (edit) {
+      const msg = ctx.callbackQuery?.message;
+      const isPhoto = Boolean(msg && 'photo' in msg && msg.photo);
+      if (chartUrl && isPhoto) {
+        await ctx.editMessageMedia(
+          { type: 'photo', media: chartUrl, caption: text, parse_mode: 'HTML' },
+          { reply_markup: kb },
+        );
+      } else if (isPhoto) {
+        await ctx.editMessageCaption({ caption: text, parse_mode: 'HTML', reply_markup: kb });
+      } else {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } });
+      }
+      return;
+    }
+    if (chartUrl) {
+      await ctx.replyWithPhoto(chartUrl, { caption: text, parse_mode: 'HTML', reply_markup: kb });
+    } else {
+      await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } });
+    }
+  } catch (err) {
+    const m = (err as Error).message ?? '';
+    if (/message is not modified/i.test(m)) return;
+    // Editing can fail if the message type changed; fall back to a fresh card.
+    if (edit) {
+      if (chartUrl) await ctx.replyWithPhoto(chartUrl, { caption: text, parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
+      else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } }).catch(() => {});
+      return;
+    }
+    throw err;
+  }
 }
 
 /** Execute an instant quick-buy of the user's current token for `amountSui`. */
@@ -506,14 +560,15 @@ async function onText(ctx: BotContext): Promise<void> {
   const state = ctx.services.sessions.get(id);
   const text = ctx.message?.text?.trim() ?? '';
   if (text.startsWith('/')) return;
-  // No active flow: pasting a coin type anywhere jumps straight into a buy.
-  if (!state) {
-    if (isValidCoinType(text)) {
-      await ensureWallet(ctx);
-      await promptBuyAmount(ctx, text);
-    }
+  // A pasted coin type ALWAYS shows the token card — even mid-flow — except in
+  // the few steps that are specifically waiting for a coin type as input.
+  const awaitingCoinType = new Set(['buy_token', 'order_token', 'dca_token', 'snipe_token', 'watch_token', 'bundle_token']);
+  if (isValidCoinType(text) && !(state && awaitingCoinType.has(state.flow))) {
+    await ensureWallet(ctx);
+    await promptBuyAmount(ctx, text);
     return;
   }
+  if (!state) return;
 
   switch (state.flow) {
     case 'import_wallet': {
@@ -829,6 +884,10 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     }));
 
   cb('menu', home);
+  bot.callbackQuery('home_ref', guard(async (ctx) => {
+    await ctx.answerCallbackQuery('Refreshing…').catch(() => {});
+    await home(ctx, true);
+  }));
   cb('wallet', showWallet);
   cb('positions', showPositions);
   cb('settings', showSettings);
@@ -922,7 +981,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     if (arg === 'ref') {
       await ctx.answerCallbackQuery('Refreshing…').catch(() => {});
       const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
-      if (coinType) await promptBuyAmount(ctx, coinType);
+      if (coinType) await promptBuyAmount(ctx, coinType, true); // edit in place
       return;
     }
     if (arg === 'x') {

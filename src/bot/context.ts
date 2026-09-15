@@ -17,6 +17,7 @@ import type { LaunchpadClient } from '../launch/launchpadClient.js';
 import type { BridgeService } from '../bridge/index.js';
 import type { PriceOracle } from '../trade/priceOracle.js';
 import type { DexScreener } from '../services/dexscreener.js';
+import type { ChartService } from '../services/chart.js';
 import type { SessionStore } from './session.js';
 
 export interface Services {
@@ -25,6 +26,7 @@ export interface Services {
   sui: SuiService;
   oracle: PriceOracle;
   dex: DexScreener;
+  chart: ChartService;
   wallet: WalletService;
   trade: TradeService;
   referral: ReferralService;

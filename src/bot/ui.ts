@@ -34,7 +34,9 @@ export function mainMenu(): InlineKeyboard {
     .text('🎁 Referrals', 'referral')
     .row()
     .text('⚙️ Settings', 'settings')
-    .text('❓ Help', 'help');
+    .text('❓ Help', 'help')
+    .row()
+    .text('🔄 Refresh', 'home_ref');
 }
 
 export function backMenu(): InlineKeyboard {

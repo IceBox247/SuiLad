@@ -7,6 +7,7 @@ import { SuiService } from './sui/service.js';
 import { createSwapProvider } from './trade/factory.js';
 import { PriceOracle } from './trade/priceOracle.js';
 import { DexScreener } from './services/dexscreener.js';
+import { ChartService } from './services/chart.js';
 import { WalletService } from './services/walletService.js';
 import { ReferralService } from './services/referralService.js';
 import { PayoutService } from './services/payoutService.js';
@@ -42,6 +43,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
   const swap = createSwapProvider(config, suiClient);
   const oracle = new PriceOracle(swap, sui);
   const dex = new DexScreener();
+  const chart = new ChartService();
 
   const wallet = new WalletService(repo, config.walletEncryptionKey, config.maxSubWallets);
   const referral = new ReferralService(repo, config.referralLevelBps);
@@ -77,7 +79,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
   const bridge = new BridgeService(createBridgeProvider(config));
 
   const services: Services = {
-    config, repo, sui, oracle, dex, wallet, trade, referral, payout, security,
+    config, repo, sui, oracle, dex, chart, wallet, trade, referral, payout, security,
     orders, copy, sniper, watchlist, bundle, launch, launchpad, bridge,
     sessions: new SessionStore(),
     pending: new Map(),
