@@ -7,7 +7,7 @@ import type { ChainId } from '../chains/types.js';
 import { SUI_TYPE } from '../sui/service.js';
 import { isValidCoinType, isValidSuiAddress, isPositiveAmount, normalizeSuiAddress } from '../util/validate.js';
 import { isValidSecretKey } from '../sui/wallet.js';
-import { formatAmount, fromBaseUnits, shortenAddress } from '../util/format.js';
+import { formatAmount, fromBaseUnits, shortenAddress, toBaseUnits } from '../util/format.js';
 import { formatUsd, formatPct } from '../services/dexscreener.js';
 import type { PreparedQuote } from '../trade/tradeService.js';
 import type { LaunchParams } from '../launch/types.js';
@@ -68,7 +68,7 @@ async function home(ctx: BotContext, edit = false): Promise<void> {
 
 // --- Chain selector ---------------------------------------------------------
 
-const LIVE_CHAINS: ChainId[] = ['sui', 'solana'];
+const LIVE_CHAINS: ChainId[] = ['sui', 'solana', 'ethereum', 'base', 'arbitrum', 'polygon', 'bsc'];
 
 async function showChainPicker(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
@@ -363,34 +363,61 @@ async function quickBuy(ctx: BotContext, amountSui: string): Promise<void> {
   );
 }
 
-// --- Solana trading (multi-chain) -------------------------------------------
+// --- Generic non-Sui chain trading (Solana, EVM, …) -------------------------
 
-const SOL_QUICK = ['0.1', '0.5', '1', '5'];
-const SOL_MINT = CHAINS.solana.nativeAddress;
+/** Native quick-buy presets per chain (in native token units). */
+const QUICK_PRESETS: Partial<Record<ChainId, string[]>> = {
+  solana: ['0.1', '0.5', '1', '5'],
+  ethereum: ['0.01', '0.05', '0.1', '0.5'],
+  base: ['0.01', '0.05', '0.1', '0.5'],
+  arbitrum: ['0.01', '0.05', '0.1', '0.5'],
+  polygon: ['5', '25', '100', '500'],
+  bsc: ['0.05', '0.1', '0.5', '1'],
+  tron: ['20', '100', '500', '1000'],
+  ton: ['1', '5', '25', '100'],
+};
 
-/** True when `text` looks like a Solana mint address (base58, 32 bytes). */
-function isSolanaMint(ctx: BotContext, text: string): boolean {
-  const a = ctx.services.adapters.solana;
-  return Boolean(a && !text.includes('::') && !text.startsWith('0x') && a.isValidAddress(text));
+/** Resolve the active non-Sui chain context, or null when on Sui. */
+async function activeNonSui(ctx: BotContext): Promise<{ chain: ChainId; adapter: import('../chains/types.js').ChainAdapter; meta: typeof CHAINS[ChainId] } | null> {
+  const chain = await ctx.services.multiWallet.getActiveChain(tgId(ctx));
+  const adapter = ctx.services.adapters[chain];
+  if (chain === 'sui' || !adapter) return null;
+  return { chain, adapter, meta: CHAINS[chain] };
 }
 
-/** Rich Solana token card with a real mevx chart + SOL quick-buy buttons. */
-async function solanaCard(ctx: BotContext, mint: string, edit = false): Promise<void> {
-  const id = tgId(ctx);
-  const adapter = ctx.services.adapters.solana!;
-  await ctx.services.repo.setMeta(`sbuytok:${id}`, mint).catch(() => {});
+/** True when `text` is a valid token address on `chain`. */
+function isChainToken(ctx: BotContext, text: string, chain: ChainId): boolean {
+  const a = ctx.services.adapters[chain];
+  if (!a) return false;
+  if (chain === 'solana' && (text.includes('::') || text.startsWith('0x'))) return false;
+  return a.isValidAddress(text);
+}
 
-  const address = await ctx.services.multiWallet.ensureWallet(id, 'solana');
-  const [info, tokMeta, solBal, held] = await Promise.all([
-    ctx.services.dex.token(mint, 'solana').catch(() => null),
-    adapter.getTokenMeta(mint).catch(() => ({ address: mint, symbol: mint.slice(0, 4), name: mint.slice(0, 4), decimals: 9 })),
+/** Gas headroom to keep in base units so a native-in buy can still pay fees. */
+function gasBuffer(meta: typeof CHAINS[ChainId]): bigint {
+  if (meta.family === 'solana') return 5_000_000n; // 0.005 SOL
+  return 10n ** BigInt(meta.nativeDecimals) / 500n; // ~0.2% of one native token
+}
+
+/** Rich token card for any non-Sui chain: real mevx chart + native quick-buy. */
+async function chainCard(ctx: BotContext, token: string, edit = false): Promise<void> {
+  const id = tgId(ctx);
+  const cc = await activeNonSui(ctx);
+  if (!cc) return;
+  const { chain, adapter, meta } = cc;
+  await ctx.services.repo.setMeta(`xtok:${id}`, `${chain}\n${token}`).catch(() => {});
+
+  const address = await ctx.services.multiWallet.ensureWallet(id, chain);
+  const [info, tokMeta, nativeBal, held] = await Promise.all([
+    ctx.services.dex.token(token, meta.dexScreenerChain).catch(() => null),
+    adapter.getTokenMeta(token).catch(() => ({ address: token, symbol: token.slice(0, 6), name: token.slice(0, 6), decimals: 18 })),
     adapter.getNativeBalance(address).catch(() => 0n),
-    adapter.getTokenBalance(address, mint).catch(() => 0n),
+    adapter.getTokenBalance(address, token).catch(() => 0n),
   ]);
-  const chartUrl = info?.pairAddress ? await ctx.services.chart.chartUrl(info.pairAddress, 'solana').catch(() => null) : null;
+  const chartUrl = info?.pairAddress ? await ctx.services.chart.chartUrl(info.pairAddress, meta.dexScreenerChain).catch(() => null) : null;
 
   const sym = info?.symbol ?? tokMeta.symbol;
-  const lines: string[] = [`◎ <b>${esc(info?.name ?? tokMeta.name)}</b>  •  <b>$${esc(sym)}</b>`, ''];
+  const lines: string[] = [`${meta.icon} <b>${esc(info?.name ?? tokMeta.name)}</b>  •  <b>$${esc(sym)}</b>`, `<i>on ${esc(meta.name)}</i>`, ''];
   if (info) {
     lines.push(
       `💰 <b>Price:</b>  $${info.priceUsd.toPrecision(4)}`,
@@ -405,88 +432,99 @@ async function solanaCard(ctx: BotContext, mint: string, edit = false): Promise<
   } else {
     lines.push('<i>No market data yet — very new or not on a DEX.</i>');
   }
-  lines.push('', `📋 <b>Mint</b> (tap to copy)`, code(mint), '');
+  lines.push('', `📋 <b>Token</b> (tap to copy)`, code(token), '');
   if (held > 0n) lines.push(`👜 <b>Holding:</b>  ${esc(formatAmount(held, tokMeta.decimals))} ${esc(sym)}`);
-  lines.push(`💵 <b>Balance:</b>  ${esc(formatAmount(solBal, 9))} SOL`, '', '👇 <b>Tap an amount to buy</b> (SOL):');
+  lines.push(`💵 <b>Balance:</b>  ${esc(formatAmount(nativeBal, meta.nativeDecimals))} ${esc(meta.nativeSymbol)}`, '', `👇 <b>Tap an amount to buy</b> (${esc(meta.nativeSymbol)}):`);
 
-  const solscan = `https://solscan.io/token/${mint}`;
+  const presets = QUICK_PRESETS[chain] ?? ['0.1', '0.5', '1', '5'];
   const xSearch = `https://x.com/search?q=${encodeURIComponent('$' + sym)}`;
   const kb = new InlineKeyboard();
-  kb.text(`🟢 ${SOL_QUICK[0]} SOL`, `sq:${SOL_QUICK[0]}`).text(`🟢 ${SOL_QUICK[1]} SOL`, `sq:${SOL_QUICK[1]}`).row();
-  kb.text(`🟢 ${SOL_QUICK[2]} SOL`, `sq:${SOL_QUICK[2]}`).text(`🟢 ${SOL_QUICK[3]} SOL`, `sq:${SOL_QUICK[3]}`).row();
+  kb.text(`🟢 ${presets[0]} ${meta.nativeSymbol}`, `sq:${presets[0]}`).text(`🟢 ${presets[1]} ${meta.nativeSymbol}`, `sq:${presets[1]}`).row();
+  kb.text(`🟢 ${presets[2]} ${meta.nativeSymbol}`, `sq:${presets[2]}`).text(`🟢 ${presets[3]} ${meta.nativeSymbol}`, `sq:${presets[3]}`).row();
   kb.text('✏️ Buy X', 'sq:x').text('🔴 Sell', 'ssell').row();
-  kb.url('📊 Chart', info?.url ?? solscan).url('🔎 Solscan', solscan).url('𝕏 Search', xSearch).row();
+  kb.url('📊 Chart', info?.url ?? adapter.explorerAddress(token)).url('🔎 Explorer', adapter.explorerAddress(token)).url('𝕏 Search', xSearch).row();
   kb.text('🔄 Refresh', 'sref').text('⬅️ Menu', 'menu');
 
   await renderCard(ctx, { text: lines.join('\n'), kb, chartUrl, edit });
 }
 
-/** Execute a Solana buy: `amountSol` of SOL → the stored mint, via Jupiter. */
-async function solanaBuy(ctx: BotContext, amountSol: string): Promise<void> {
+/** Read the stored {chain, token} for the active card, if it matches the chain. */
+async function currentChainToken(ctx: BotContext): Promise<{ chain: ChainId; token: string } | null> {
+  const raw = await ctx.services.repo.getMeta(`xtok:${tgId(ctx)}`);
+  if (!raw) return null;
+  const [chain, token] = raw.split('\n');
+  if (!chain || !token) return null;
+  return { chain: chain as ChainId, token };
+}
+
+/** Execute a buy of `amountNative` of the native token → the stored token. */
+async function chainBuy(ctx: BotContext, amountNative: string): Promise<void> {
   const id = tgId(ctx);
-  const mint = (await ctx.services.repo.getMeta(`sbuytok:${id}`)) ?? '';
-  if (!mint) {
-    await ctx.reply('That token expired. Paste the mint again.', { reply_markup: backMenu() });
+  const cur = await currentChainToken(ctx);
+  const cc = await activeNonSui(ctx);
+  if (!cur || !cc || cur.chain !== cc.chain) {
+    await ctx.reply('That token expired. Paste it again.', { reply_markup: backMenu() });
     return;
   }
-  if (!isPositiveAmount(amountSol)) throw new Error('Enter a positive SOL amount.');
-  await ctx.services.security.enforceRate(id, 'solbuy');
-  const adapter = ctx.services.adapters.solana!;
-  const address = await ctx.services.multiWallet.ensureWallet(id, 'solana');
-  const lamports = BigInt(Math.round(Number(amountSol) * 1e9));
+  if (!isPositiveAmount(amountNative)) throw new Error(`Enter a positive ${cc.meta.nativeSymbol} amount.`);
+  await ctx.services.security.enforceRate(id, 'chainbuy');
+  const { chain, adapter, meta } = cc;
+  const address = await ctx.services.multiWallet.ensureWallet(id, chain);
+  const amount = toBaseUnits(amountNative, meta.nativeDecimals);
   const bal = await adapter.getNativeBalance(address).catch(() => 0n);
-  // Keep a small buffer for network + ATA rent.
-  if (bal < lamports + 5_000_000n) {
-    throw new Error(`Not enough SOL. Balance: ${formatAmount(bal, 9)} SOL. Fund ${shortenAddress(address, 6, 6)} and retry.`);
+  if (bal < amount + gasBuffer(meta)) {
+    throw new Error(`Not enough ${meta.nativeSymbol}. Balance: ${formatAmount(bal, meta.nativeDecimals)} ${meta.nativeSymbol}. Fund ${shortenAddress(address, 6, 6)} and retry.`);
   }
   const u = (await ctx.services.repo.getUser(id))!;
-  await ctx.reply(`⏳ Buying <b>${esc(amountSol)} SOL</b> worth on Solana…`, { parse_mode: 'HTML' });
-  const req = { inputToken: SOL_MINT, outputToken: mint, amount: lamports.toString(), slippageBps: u.settings.slippageBps, owner: address };
+  await ctx.reply(`⏳ Buying <b>${esc(amountNative)} ${esc(meta.nativeSymbol)}</b> worth on ${esc(meta.name)}…`, { parse_mode: 'HTML' });
+  const req = { inputToken: meta.nativeAddress, outputToken: cur.token, amount: amount.toString(), slippageBps: u.settings.slippageBps, owner: address };
   const quote = await adapter.quote(req);
-  const secret = await ctx.services.multiWallet.getSecret(id, 'solana');
+  const secret = await ctx.services.multiWallet.getSecret(id, chain);
   const { digest } = await adapter.swap(secret, quote, req);
-  const tokMeta = await adapter.getTokenMeta(mint).catch(() => ({ decimals: 9, symbol: mint.slice(0, 4) } as { decimals: number; symbol: string }));
+  const tokMeta = await adapter.getTokenMeta(cur.token).catch(() => ({ decimals: 18, symbol: cur.token.slice(0, 6) } as { decimals: number; symbol: string }));
   await ctx.reply(
-    `✅ Bought <b>~${esc(formatAmount(BigInt(quote.outAmount), tokMeta.decimals))} ${esc(tokMeta.symbol)}</b> for ${esc(amountSol)} SOL\n${link('View transaction', adapter.explorerTx(digest))}`,
-    { parse_mode: 'HTML', reply_markup: mainMenu('Solana') },
+    `✅ Bought <b>~${esc(formatAmount(BigInt(quote.outAmount), tokMeta.decimals))} ${esc(tokMeta.symbol)}</b> for ${esc(amountNative)} ${esc(meta.nativeSymbol)}\n${link('View transaction', adapter.explorerTx(digest))}`,
+    { parse_mode: 'HTML', reply_markup: mainMenu(meta.name) },
   );
 }
 
-/** Execute a Solana sell: `percent` of the held mint → SOL, via Jupiter. */
-async function solanaSell(ctx: BotContext, percent: number): Promise<void> {
+/** Execute a sell of `percent` of the held token → native, on the active chain. */
+async function chainSell(ctx: BotContext, percent: number): Promise<void> {
   const id = tgId(ctx);
-  const mint = (await ctx.services.repo.getMeta(`sbuytok:${id}`)) ?? '';
-  if (!mint) {
-    await ctx.reply('That token expired. Paste the mint again.', { reply_markup: backMenu() });
+  const cur = await currentChainToken(ctx);
+  const cc = await activeNonSui(ctx);
+  if (!cur || !cc || cur.chain !== cc.chain) {
+    await ctx.reply('That token expired. Paste it again.', { reply_markup: backMenu() });
     return;
   }
-  await ctx.services.security.enforceRate(id, 'solsell');
-  const adapter = ctx.services.adapters.solana!;
-  const address = await ctx.services.multiWallet.ensureWallet(id, 'solana');
-  const held = await adapter.getTokenBalance(address, mint).catch(() => 0n);
+  await ctx.services.security.enforceRate(id, 'chainsell');
+  const { chain, adapter, meta } = cc;
+  const address = await ctx.services.multiWallet.ensureWallet(id, chain);
+  const held = await adapter.getTokenBalance(address, cur.token).catch(() => 0n);
   if (held <= 0n) throw new Error('You have none of this token to sell.');
   const sellAmount = (held * BigInt(Math.max(1, Math.min(100, percent)))) / 100n;
   const u = (await ctx.services.repo.getUser(id))!;
-  await ctx.reply(`⏳ Selling <b>${percent}%</b> on Solana…`, { parse_mode: 'HTML' });
-  const req = { inputToken: mint, outputToken: SOL_MINT, amount: sellAmount.toString(), slippageBps: u.settings.slippageBps, owner: address };
+  await ctx.reply(`⏳ Selling <b>${percent}%</b> on ${esc(meta.name)}…`, { parse_mode: 'HTML' });
+  const req = { inputToken: cur.token, outputToken: meta.nativeAddress, amount: sellAmount.toString(), slippageBps: u.settings.slippageBps, owner: address };
   const quote = await adapter.quote(req);
-  const secret = await ctx.services.multiWallet.getSecret(id, 'solana');
+  const secret = await ctx.services.multiWallet.getSecret(id, chain);
   const { digest } = await adapter.swap(secret, quote, req);
   await ctx.reply(
-    `✅ Sold for <b>~${esc(formatAmount(BigInt(quote.outAmount), 9))} SOL</b>\n${link('View transaction', adapter.explorerTx(digest))}`,
-    { parse_mode: 'HTML', reply_markup: mainMenu('Solana') },
+    `✅ Sold for <b>~${esc(formatAmount(BigInt(quote.outAmount), meta.nativeDecimals))} ${esc(meta.nativeSymbol)}</b>\n${link('View transaction', adapter.explorerTx(digest))}`,
+    { parse_mode: 'HTML', reply_markup: mainMenu(meta.name) },
   );
 }
 
 async function startBuy(ctx: BotContext, coinType?: string): Promise<void> {
   const id = await ensureWallet(ctx);
   const chain = await ctx.services.multiWallet.getActiveChain(id);
-  if (chain === 'solana') {
-    if (coinType && isSolanaMint(ctx, coinType)) {
-      await solanaCard(ctx, coinType);
+  if (chain !== 'sui') {
+    const meta = CHAINS[chain];
+    if (coinType && isChainToken(ctx, coinType, chain)) {
+      await chainCard(ctx, coinType);
       return;
     }
-    await ctx.reply('🟢 <b>Buy on Solana</b>\n\nPaste the token <b>mint address</b>:', { parse_mode: 'HTML' });
+    await ctx.reply(`🟢 <b>Buy on ${esc(meta.name)}</b>\n\nPaste the token <b>address</b>:`, { parse_mode: 'HTML' });
     return;
   }
   if (coinType && isValidCoinType(coinType)) {
@@ -502,10 +540,11 @@ async function startBuy(ctx: BotContext, coinType?: string): Promise<void> {
 async function startSell(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
   const chain = await ctx.services.multiWallet.getActiveChain(id);
-  if (chain === 'solana') {
-    const mint = await ctx.services.repo.getMeta(`sbuytok:${id}`);
-    if (mint) { await solanaCard(ctx, mint); return; }
-    await ctx.reply('🔴 <b>Sell on Solana</b>\n\nPaste the token <b>mint address</b> to open its card, then tap Sell.', { parse_mode: 'HTML' });
+  if (chain !== 'sui') {
+    const meta = CHAINS[chain];
+    const cur = await currentChainToken(ctx);
+    if (cur && cur.chain === chain) { await chainCard(ctx, cur.token); return; }
+    await ctx.reply(`🔴 <b>Sell on ${esc(meta.name)}</b>\n\nPaste the token <b>address</b> to open its card, then tap Sell.`, { parse_mode: 'HTML' });
     return;
   }
   const address = (await ctx.services.wallet.getAddress(id))!;
@@ -850,12 +889,12 @@ async function onText(ctx: BotContext): Promise<void> {
   const state = ctx.services.sessions.get(id);
   const text = ctx.message?.text?.trim() ?? '';
   if (text.startsWith('/')) return;
-  // On Solana, a pasted mint shows the Solana token card (mirrors the Sui path).
-  if (!(state && state.flow === 'sol_buy_amount') && isSolanaMint(ctx, text)) {
+  // On a non-Sui chain, a pasted token address shows its card (mirrors Sui).
+  if (!(state && state.flow === 'sol_buy_amount')) {
     const active = await ctx.services.multiWallet.getActiveChain(id).catch(() => 'sui' as ChainId);
-    if (active === 'solana') {
+    if (active !== 'sui' && isChainToken(ctx, text, active)) {
       await ensureWallet(ctx);
-      await solanaCard(ctx, text);
+      await chainCard(ctx, text);
       return;
     }
   }
@@ -898,7 +937,7 @@ async function onText(ctx: BotContext): Promise<void> {
       return;
     case 'sol_buy_amount':
       ctx.services.sessions.clear(id);
-      await solanaBuy(ctx, text);
+      await chainBuy(ctx, text);
       return;
     case 'sell_amount': {
       const coinType = state.data.coinType!;
@@ -1343,27 +1382,27 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     await promptBuyAmount(ctx, coinType);
   }));
 
-  // Quick-buy buttons on the token card: qb:<amount> | qb:x (custom) | qb:ref (refresh)
-  // --- Solana card callbacks ---
+  // --- Non-Sui chain card callbacks (Solana / EVM / …) ---
   bot.callbackQuery(/^sq:(.+)$/, guard(async (ctx) => {
     const arg = ctx.match![1]!;
     const id = tgId(ctx);
+    const cc = await activeNonSui(ctx);
     if (arg === 'x') {
       await ctx.answerCallbackQuery().catch(() => {});
-      const mint = await ctx.services.repo.getMeta(`sbuytok:${id}`);
-      if (mint) {
-        ctx.services.sessions.set(id, { flow: 'sol_buy_amount', data: { coinType: mint } });
-        await ctx.reply('How much <b>SOL</b> to spend? (e.g. <code>0.75</code>)', { parse_mode: 'HTML' });
+      const cur = await currentChainToken(ctx);
+      if (cur) {
+        ctx.services.sessions.set(id, { flow: 'sol_buy_amount', data: { coinType: cur.token } });
+        await ctx.reply(`How much <b>${esc(cc?.meta.nativeSymbol ?? 'native')}</b> to spend? (e.g. <code>0.75</code>)`, { parse_mode: 'HTML' });
       }
       return;
     }
-    await ctx.answerCallbackQuery(`Buying ${arg} SOL…`).catch(() => {});
-    await solanaBuy(ctx, arg);
+    await ctx.answerCallbackQuery(`Buying ${arg} ${cc?.meta.nativeSymbol ?? ''}…`).catch(() => {});
+    await chainBuy(ctx, arg);
   }));
   bot.callbackQuery('sref', guard(async (ctx) => {
     await ctx.answerCallbackQuery('Refreshing…').catch(() => {});
-    const mint = await ctx.services.repo.getMeta(`sbuytok:${tgId(ctx)}`);
-    if (mint) await solanaCard(ctx, mint, true);
+    const cur = await currentChainToken(ctx);
+    if (cur) await chainCard(ctx, cur.token, true);
   }));
   bot.callbackQuery('ssell', guard(async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
@@ -1374,7 +1413,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   }));
   bot.callbackQuery(/^ssell:(\d+)$/, guard(async (ctx) => {
     await ctx.answerCallbackQuery('Selling…').catch(() => {});
-    await solanaSell(ctx, Number(ctx.match![1]));
+    await chainSell(ctx, Number(ctx.match![1]));
   }));
 
   bot.callbackQuery(/^qb:(.+)$/, guard(async (ctx) => {

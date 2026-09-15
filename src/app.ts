@@ -23,6 +23,8 @@ import { LaunchpadClient } from './launch/launchpadClient.js';
 import { BridgeService, createBridgeProvider } from './bridge/index.js';
 import { MultiWalletService } from './services/multiWallet.js';
 import { SolanaAdapter } from './chains/solana.js';
+import { EvmAdapter } from './chains/evm.js';
+import { EVM_DEFAULTS } from './chains/meta.js';
 import type { ChainAdapter, ChainId } from './chains/types.js';
 import { SessionStore } from './bot/session.js';
 import { createBot } from './bot/bot.js';
@@ -86,6 +88,10 @@ export async function buildApp(config: AppConfig): Promise<App> {
   const adapters: Partial<Record<ChainId, ChainAdapter>> = {
     solana: new SolanaAdapter(config.solanaRpcUrl),
   };
+  // EVM family — one adapter per chain, sharing LI.FI + viem.
+  for (const [chain, d] of Object.entries(EVM_DEFAULTS)) {
+    if (d) adapters[chain as ChainId] = new EvmAdapter(chain as ChainId, config.evmRpc[chain] ?? d.rpc, d.explorer);
+  }
   const multiWallet = new MultiWalletService(repo, config.walletEncryptionKey, adapters);
 
   const services: Services = {

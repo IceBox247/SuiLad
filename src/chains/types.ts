@@ -14,7 +14,8 @@ export type ChainId =
   | 'arbitrum'
   | 'polygon'
   | 'bsc'
-  | 'tron';
+  | 'tron'
+  | 'ton';
 
 export interface ChainMeta {
   id: ChainId;
@@ -31,7 +32,7 @@ export interface ChainMeta {
   /** DexScreener chainId used for market data + chart lookups. */
   dexScreenerChain: string;
   /** Family — drives key scheme + address validation. */
-  family: 'sui' | 'solana' | 'evm' | 'tron';
+  family: 'sui' | 'solana' | 'evm' | 'tron' | 'ton';
 }
 
 export interface GeneratedWallet {

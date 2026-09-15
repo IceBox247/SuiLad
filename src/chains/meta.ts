@@ -6,6 +6,7 @@ export const NATIVE = {
   solana: 'So11111111111111111111111111111111111111112', // wrapped SOL mint
   evm: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE', // aggregator native sentinel
   tron: 'T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb', // wrapped TRX (WTRX)
+  ton: 'EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', // native TON sentinel
 } as const;
 
 export const CHAINS: Record<ChainId, ChainMeta> = {
@@ -40,6 +41,10 @@ export const CHAINS: Record<ChainId, ChainMeta> = {
   tron: {
     id: 'tron', name: 'Tron', icon: '🔺', nativeSymbol: 'TRX', nativeDecimals: 6,
     nativeAddress: NATIVE.tron, dexScreenerChain: 'tron', family: 'tron',
+  },
+  ton: {
+    id: 'ton', name: 'TON', icon: '💎', nativeSymbol: 'TON', nativeDecimals: 9,
+    nativeAddress: NATIVE.ton, dexScreenerChain: 'ton', family: 'ton',
   },
 };
 
