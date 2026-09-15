@@ -83,6 +83,7 @@ const RawSchema = z.object({
   ARBITRUM_RPC_URL: z.string().url().optional().or(z.literal('')),
   POLYGON_RPC_URL: z.string().url().optional().or(z.literal('')),
   BSC_RPC_URL: z.string().url().optional().or(z.literal('')),
+  TON_API_KEY: z.string().optional().or(z.literal('')),
 
   // Bridging
   BRIDGE_PROVIDER: z.enum(['mock', 'mayan', 'debridge']).default('mock'),
@@ -132,6 +133,7 @@ export interface AppConfig {
   launchpadPackageId: string;
   launchpadConfigId: string;
   solanaRpcUrl: string;
+  tonApiKey: string;
   /** Optional per-chain EVM RPC overrides, keyed by ChainId. */
   evmRpc: Record<string, string>;
   bridgeProvider: 'mock' | 'mayan' | 'debridge';
@@ -209,6 +211,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     launchpadPackageId: raw.LAUNCHPAD_PACKAGE_ID || '',
     launchpadConfigId: raw.LAUNCHPAD_CONFIG_ID || '',
     solanaRpcUrl: raw.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
+    tonApiKey: raw.TON_API_KEY || '',
     evmRpc: Object.fromEntries(
       ([
         ['ethereum', raw.ETHEREUM_RPC_URL],

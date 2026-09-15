@@ -25,6 +25,7 @@ import { BridgeService, createBridgeProvider } from './bridge/index.js';
 import { MultiWalletService } from './services/multiWallet.js';
 import { SolanaAdapter } from './chains/solana.js';
 import { EvmAdapter } from './chains/evm.js';
+import { TonAdapter } from './chains/ton.js';
 import { EVM_DEFAULTS } from './chains/meta.js';
 import type { ChainAdapter, ChainId } from './chains/types.js';
 import { SessionStore } from './bot/session.js';
@@ -89,6 +90,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
   // Non-Sui chain adapters (multi-chain trading). Sui keeps its dedicated stack.
   const adapters: Partial<Record<ChainId, ChainAdapter>> = {
     solana: new SolanaAdapter(config.solanaRpcUrl),
+    ton: new TonAdapter(config.tonApiKey),
   };
   // EVM family — one adapter per chain, sharing LI.FI + viem.
   for (const [chain, d] of Object.entries(EVM_DEFAULTS)) {
