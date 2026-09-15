@@ -16,6 +16,7 @@ import type { LaunchService } from '../launch/publisher.js';
 import type { LaunchpadClient } from '../launch/launchpadClient.js';
 import type { BridgeService } from '../bridge/index.js';
 import type { PriceOracle } from '../trade/priceOracle.js';
+import type { DexScreener } from '../services/dexscreener.js';
 import type { SessionStore } from './session.js';
 
 export interface Services {
@@ -23,6 +24,7 @@ export interface Services {
   repo: Repo;
   sui: SuiService;
   oracle: PriceOracle;
+  dex: DexScreener;
   wallet: WalletService;
   trade: TradeService;
   referral: ReferralService;

@@ -6,6 +6,7 @@ import { SUI_TYPE } from '../sui/service.js';
 import { isValidCoinType, isValidSuiAddress, isPositiveAmount, normalizeSuiAddress } from '../util/validate.js';
 import { isValidSecretKey } from '../sui/wallet.js';
 import { formatAmount, fromBaseUnits } from '../util/format.js';
+import { formatUsd, formatPct } from '../services/dexscreener.js';
 import type { PreparedQuote } from '../trade/tradeService.js';
 import type { LaunchParams } from '../launch/types.js';
 import { PriceOracle } from '../trade/priceOracle.js';
@@ -117,17 +118,24 @@ async function showSubwallets(ctx: BotContext): Promise<void> {
 
 // --- Buy / sell -------------------------------------------------------------
 
+/** Quick-buy amount presets (SUI). */
+const QUICK_BUY_SUI = ['0.5', '1', '2', '5'];
+
 /**
- * Show a token card (name, symbol, price, your holdings) and move the user to
- * the "how much SUI" step. Called the moment a coin type is pasted.
+ * Render a rich token card (price, market cap, liquidity, volume, price change,
+ * your holdings) with quick-buy buttons — the moment a coin type is pasted.
  */
 async function promptBuyAmount(ctx: BotContext, coinType: string): Promise<void> {
   const id = tgId(ctx);
+  // Remember which token this user is looking at (survives serverless cold
+  // starts, so the quick-buy buttons work), and set up the custom-amount flow.
   ctx.services.sessions.set(id, { flow: 'buy_amount', data: { coinType } });
+  await ctx.services.repo.setMeta(`buytok:${id}`, coinType).catch(() => {});
 
-  const [meta, address] = await Promise.all([
+  const [meta, address, info] = await Promise.all([
     ctx.services.sui.getCoinMeta(coinType),
     ctx.services.wallet.getAddress(id),
+    ctx.services.dex.token(coinType).catch(() => null),
   ]);
   const [priceNum, suiBal, held] = await Promise.all([
     ctx.services.oracle.priceNumber(coinType).catch(() => null),
@@ -135,25 +143,60 @@ async function promptBuyAmount(ctx: BotContext, coinType: string): Promise<void>
     ctx.services.sui.getBalance(address!, coinType).catch(() => 0n),
   ]);
 
-  const priceLine = priceNum && priceNum > 0
-    ? `📈 Price: <b>${priceNum.toPrecision(6)} SUI</b>`
-    : '📈 Price: <i>no route / liquidity yet</i>';
-  const heldLine = held > 0n ? `\n👜 You hold: <b>${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}</b>` : '';
+  const priceSui = info?.priceNative || priceNum || 0;
+  const lines: string[] = [`🪙 <b>${esc(info?.name ?? meta.name)}</b> — <b>${esc(info?.symbol ?? meta.symbol)}</b>`];
 
-  const text = [
-    `🪙 <b>${esc(meta.name)}</b> — <b>${esc(meta.symbol)}</b>`,
-    priceLine,
-    `🔢 Decimals: ${meta.decimals}`,
-    code(coinType),
-    heldLine,
-    '',
-    `💰 Your SUI: <b>${esc(formatAmount(suiBal, 9))}</b>`,
-    '',
-    '🟢 How much <b>SUI</b> to spend? (e.g. <code>1.5</code>)',
-  ]
-    .filter(Boolean)
-    .join('\n');
-  await ctx.reply(text, { parse_mode: 'HTML' });
+  if (info) {
+    lines.push(
+      `💵 Price: <b>$${info.priceUsd.toPrecision(4)}</b>  (${priceSui.toPrecision(4)} SUI)`,
+      `📊 MC: <b>${formatUsd(info.mcUsd)}</b>   💧 Liq: <b>${formatUsd(info.liquidityUsd)}</b>`,
+      `📈 Vol 24h: <b>${formatUsd(info.volume24)}</b>   🏦 ${esc(info.dexId)}`,
+      `⏱ 1h ${formatPct(info.change1h)}  •  6h ${formatPct(info.change6h)}  •  24h ${formatPct(info.change24h)}`,
+    );
+  } else {
+    lines.push(
+      priceSui > 0 ? `📈 Price: <b>${priceSui.toPrecision(6)} SUI</b>` : '📈 Price: <i>no pool / liquidity yet</i>',
+      '<i>No market data yet (very new or not on a DEX).</i>',
+    );
+  }
+
+  lines.push(code(coinType));
+  if (held > 0n) lines.push(`👜 You hold: <b>${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}</b>`);
+  lines.push('', `💰 Your SUI: <b>${esc(formatAmount(suiBal, 9))}</b>`, '', '👇 Tap an amount to buy, or type a custom amount:');
+
+  const kb = new InlineKeyboard();
+  kb.text(`🟢 ${QUICK_BUY_SUI[0]} SUI`, `qb:${QUICK_BUY_SUI[0]}`).text(`🟢 ${QUICK_BUY_SUI[1]} SUI`, `qb:${QUICK_BUY_SUI[1]}`).row();
+  kb.text(`🟢 ${QUICK_BUY_SUI[2]} SUI`, `qb:${QUICK_BUY_SUI[2]}`).text(`🟢 ${QUICK_BUY_SUI[3]} SUI`, `qb:${QUICK_BUY_SUI[3]}`).row();
+  kb.text('✏️ Buy X', 'qb:x').text('🔄 Refresh', 'qb:ref').row();
+  if (info) kb.url('📊 Chart', info.url).row();
+  kb.text('⬅️ Menu', 'menu');
+
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } });
+}
+
+/** Execute an instant quick-buy of the user's current token for `amountSui`. */
+async function quickBuy(ctx: BotContext, amountSui: string): Promise<void> {
+  const id = tgId(ctx);
+  const coinType = (await ctx.services.repo.getMeta(`buytok:${id}`)) ?? '';
+  if (!coinType) {
+    await ctx.reply('That token expired. Paste the coin type again.', { reply_markup: backMenu() });
+    return;
+  }
+  ctx.services.security.assertBuyWithinCap(Number(amountSui));
+  const u = (await ctx.services.repo.getUser(id))!;
+  await ctx.reply(`⏳ Buying <b>${esc(amountSui)} SUI</b>…`, { parse_mode: 'HTML' });
+  const prepared = await ctx.services.trade.prepareQuote({
+    inputType: SUI_TYPE,
+    outputType: coinType,
+    humanAmount: amountSui,
+    slippageBps: u.settings.slippageBps,
+  });
+  const signer = await ctx.services.wallet.getKeypair(id);
+  const { digest } = await ctx.services.trade.execute({ telegramId: id, prepared, signer });
+  await ctx.reply(
+    `✅ Bought <b>~${esc(prepared.display.amountOut)} ${esc(prepared.outputMeta.symbol)}</b> for ${esc(amountSui)} SUI\n${link('View transaction', ctx.services.sui.txUrl(digest))}`,
+    { parse_mode: 'HTML', reply_markup: mainMenu() },
+  );
 }
 
 async function startBuy(ctx: BotContext, coinType?: string): Promise<void> {
@@ -849,6 +892,29 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     const meta = await ctx.services.sui.getCoinMeta(coinType);
     ctx.services.sessions.set(tgId(ctx), { flow: 'sell_amount', data: { coinType } });
     await ctx.reply(`How much <b>${esc(meta.symbol)}</b> to sell?`, { parse_mode: 'HTML' });
+  }));
+
+  // Quick-buy buttons on the token card: qb:<amount> | qb:x (custom) | qb:ref (refresh)
+  bot.callbackQuery(/^qb:(.+)$/, guard(async (ctx) => {
+    const arg = ctx.match![1]!;
+    const id = tgId(ctx);
+    if (arg === 'ref') {
+      await ctx.answerCallbackQuery('Refreshing…').catch(() => {});
+      const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
+      if (coinType) await promptBuyAmount(ctx, coinType);
+      return;
+    }
+    if (arg === 'x') {
+      await ctx.answerCallbackQuery().catch(() => {});
+      const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
+      if (coinType) {
+        ctx.services.sessions.set(id, { flow: 'buy_amount', data: { coinType } });
+        await ctx.reply('How much <b>SUI</b> to spend? (e.g. <code>1.5</code>)', { parse_mode: 'HTML' });
+      }
+      return;
+    }
+    await ctx.answerCallbackQuery(`Buying ${arg} SUI…`).catch(() => {});
+    await quickBuy(ctx, arg);
   }));
   bot.callbackQuery(/^order:(.+)$/, guard(async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
