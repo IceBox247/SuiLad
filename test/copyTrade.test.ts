@@ -1,5 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { mirrorAmountMist } from '../src/services/copyTrade.js';
+import { mirrorAmountMist, CopyTradeService } from '../src/services/copyTrade.js';
+import { makeRepo } from './helpers.js';
+
+describe('copy-trade follow validation', () => {
+  it('rejects a non-numeric or non-positive maxSui', async () => {
+    const repo = makeRepo();
+    await repo.createUser('u1', { address: '0x1', encryptedSecretKey: 'e', keyScheme: 'ED25519' });
+    const svc = new CopyTradeService(repo, {} as any, {} as any, {} as any, {} as any, async () => {});
+    await expect(svc.follow('u1', '0x2', 5000, 'abc')).rejects.toThrow(/positive number/);
+    await expect(svc.follow('u1', '0x2', 5000, '0')).rejects.toThrow(/positive number/);
+    await expect(svc.follow('u1', '0x2', 5000, '')).rejects.toThrow(/positive number/);
+  });
+});
 
 describe('copy-trade mirror math', () => {
   it('mirrors a fraction of the leader spend, capped by the budget', () => {

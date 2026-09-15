@@ -170,14 +170,14 @@ async function showChainPositions(ctx: BotContext, chain: ChainId): Promise<void
   const positions = Object.entries(u?.chainPositions ?? {})
     .filter(([k]) => k.startsWith(`${chain}:`))
     .map(([, p]) => p)
-    .filter((p) => BigInt(p.amount) > 0n || BigInt(p.realizedNative) !== 0n);
+    .filter((p) => BigInt(p.amount) > 0n || Number(p.realizedUsd) !== 0);
 
   const lines: string[] = [`📊 <b>Positions — ${esc(meta.name)}</b>`, '', `💵 <b>Balance:</b> ${esc(formatAmount(nativeBal, meta.nativeDecimals))} ${esc(meta.nativeSymbol)}`, ''];
   if (positions.length === 0) lines.push('<i>No tracked positions yet. Paste a token to trade.</i>');
   const kb = new InlineKeyboard();
   for (const p of positions) {
-    const realized = Number(BigInt(p.realizedNative)) / 10 ** meta.nativeDecimals;
-    const rl = Math.abs(realized) > 1e-9 ? ` • realized ${realized >= 0 ? '+' : ''}${realized.toPrecision(3)} ${meta.nativeSymbol}` : '';
+    const realized = Number(p.realizedUsd);
+    const rl = Math.abs(realized) > 1e-6 ? ` • realized ${realized >= 0 ? '+' : '-'}$${Math.abs(realized).toPrecision(3)}` : '';
     lines.push(`• <b>${esc(p.symbol)}</b>: ${esc(formatAmount(BigInt(p.amount), p.decimals))}${esc(rl)}`);
   }
   positions.forEach((p, i) => {
@@ -479,6 +479,28 @@ const QUICK_PRESETS: Partial<Record<ChainId, string[]>> = {
   ton: ['1', '5', '25', '100'],
 };
 
+/** USD-denominated PnL lines for a non-Sui position at the given live USD price. */
+function chainPnlLines(cp: import('../storage/types.js').ChainPosition, priceUsd: number): string[] {
+  const lines: string[] = [];
+  const amount = Number(BigInt(cp.amount)) / 10 ** cp.decimals;
+  const cost = Number(cp.costUsd);
+  if (amount > 0 && cost > 0 && priceUsd > 0) {
+    const avgEntry = cost / amount;
+    const curValue = priceUsd * amount;
+    const pnl = curValue - cost;
+    const pct = (curValue / cost - 1) * 100;
+    const up = pnl >= 0;
+    const s = up ? '+' : '';
+    lines.push(
+      `🎯 <b>Avg Entry:</b>  $${avgEntry.toPrecision(4)}`,
+      `${up ? '🟢' : '🔴'} <b>PnL:</b>  ${s}$${Math.abs(pnl).toPrecision(3)}  (${s}${pct.toFixed(1)}%)`,
+    );
+  }
+  const realized = Number(cp.realizedUsd);
+  if (Math.abs(realized) > 0.000001) lines.push(`💰 <b>Realized:</b>  ${realized >= 0 ? '+' : '-'}$${Math.abs(realized).toPrecision(3)}`);
+  return lines;
+}
+
 /** Resolve the active non-Sui chain context, or null when on Sui. */
 async function activeNonSui(ctx: BotContext): Promise<{ chain: ChainId; adapter: import('../chains/types.js').ChainAdapter; meta: typeof CHAINS[ChainId] } | null> {
   const chain = await ctx.services.multiWallet.getActiveChain(tgId(ctx));
@@ -539,10 +561,7 @@ async function chainCard(ctx: BotContext, token: string, edit = false): Promise<
     lines.push(`👜 <b>Holding:</b>  ${esc(formatAmount(held, tokMeta.decimals))} ${esc(sym)}`);
     const u = await ctx.services.repo.getUser(id);
     const cp = u?.chainPositions?.[`${chain}:${token}`];
-    if (cp && info?.priceNative) {
-      const synthetic = { coinType: token, symbol: cp.symbol, decimals: cp.decimals, amount: cp.amount, costMist: cp.costNative, realizedPnlMist: cp.realizedNative, updatedAt: cp.updatedAt };
-      for (const l of pnlLines(synthetic, held, info.priceNative, cp.decimals, meta.nativeSymbol, meta.nativeDecimals)) lines.push(l);
-    }
+    if (cp && info) for (const l of chainPnlLines(cp, info.priceUsd)) lines.push(l);
   }
   lines.push(`💵 <b>Balance:</b>  ${esc(formatAmount(nativeBal, meta.nativeDecimals))} ${esc(meta.nativeSymbol)}`, '', `👇 <b>Tap an amount to buy</b> (${esc(meta.nativeSymbol)}):`);
 
@@ -587,29 +606,34 @@ async function chainBuy(ctx: BotContext, amountNative: string): Promise<void> {
   }
   const u = (await ctx.services.repo.getUser(id))!;
   await ctx.reply(`⏳ Buying <b>${esc(amountNative)} ${esc(meta.nativeSymbol)}</b> worth on ${esc(meta.name)}…`, { parse_mode: 'HTML' });
+  const heldBefore = await adapter.getTokenBalance(address, cur.token).catch(() => 0n);
   const req = { inputToken: meta.nativeAddress, outputToken: cur.token, amount: amount.toString(), slippageBps: u.settings.slippageBps, owner: address };
   const quote = await adapter.quote(req);
   const secret = await ctx.services.multiWallet.getSecret(id, chain);
   const { digest } = await adapter.swap(secret, quote, req);
   const tokMeta = await adapter.getTokenMeta(cur.token).catch(() => ({ decimals: 18, symbol: cur.token.slice(0, 6) } as { decimals: number; symbol: string }));
-  // Track cost basis for cross-chain PnL (best-effort).
-  const outAmt = BigInt(quote.outAmount);
+  // Use the ACTUAL received amount (post-confirmation balance delta), not the
+  // estimate, and price the cost in USD so PnL is denomination-correct.
+  const heldAfter = await adapter.getTokenBalance(address, cur.token).catch(() => heldBefore + BigInt(quote.outAmount));
+  const received = heldAfter > heldBefore ? heldAfter - heldBefore : BigInt(quote.outAmount);
+  const priceUsd = (await ctx.services.dex.token(cur.token, meta.dexScreenerChain).catch(() => null))?.priceUsd ?? 0;
+  const buyUsd = priceUsd > 0 ? (Number(received) / 10 ** tokMeta.decimals) * priceUsd : 0;
   await ctx.services.repo
     .withUser(id, (uu) => {
       const key = `${chain}:${cur.token}`;
       uu.chainPositions = uu.chainPositions ?? {};
       const p = uu.chainPositions[key];
       if (p) {
-        p.amount = (BigInt(p.amount) + outAmt).toString();
-        p.costNative = (BigInt(p.costNative) + amount).toString();
+        p.amount = (BigInt(p.amount) + received).toString();
+        p.costUsd = (Number(p.costUsd) + buyUsd).toFixed(6);
         p.updatedAt = new Date().toISOString();
       } else {
-        uu.chainPositions[key] = { token: cur.token, symbol: tokMeta.symbol, decimals: tokMeta.decimals, amount: outAmt.toString(), costNative: amount.toString(), realizedNative: '0', updatedAt: new Date().toISOString() };
+        uu.chainPositions[key] = { token: cur.token, symbol: tokMeta.symbol, decimals: tokMeta.decimals, amount: received.toString(), costUsd: buyUsd.toFixed(6), realizedUsd: '0', updatedAt: new Date().toISOString() };
       }
     })
     .catch(() => {});
   await ctx.reply(
-    `✅ Bought <b>~${esc(formatAmount(outAmt, tokMeta.decimals))} ${esc(tokMeta.symbol)}</b> for ${esc(amountNative)} ${esc(meta.nativeSymbol)}\n${link('View transaction', adapter.explorerTx(digest))}`,
+    `✅ Bought <b>~${esc(formatAmount(received, tokMeta.decimals))} ${esc(tokMeta.symbol)}</b> for ${esc(amountNative)} ${esc(meta.nativeSymbol)}\n${link('View transaction', adapter.explorerTx(digest))}`,
     { parse_mode: 'HTML', reply_markup: mainMenu(meta.name) },
   );
 }
@@ -635,8 +659,10 @@ async function chainSell(ctx: BotContext, percent: number): Promise<void> {
   const quote = await adapter.quote(req);
   const secret = await ctx.services.multiWallet.getSecret(id, chain);
   const { digest } = await adapter.swap(secret, quote, req);
-  // Realize PnL against tracked cost basis (best-effort).
-  const proceeds = BigInt(quote.outAmount);
+  // Realize PnL in USD against tracked cost basis (best-effort). Proceeds are
+  // valued at the token's live USD price to avoid gas-noise on native deltas.
+  const sPriceUsd = (await ctx.services.dex.token(cur.token, meta.dexScreenerChain).catch(() => null))?.priceUsd ?? 0;
+  const sTokMeta = await adapter.getTokenMeta(cur.token).catch(() => ({ decimals: 18 } as { decimals: number }));
   await ctx.services.repo
     .withUser(id, (uu) => {
       const key = `${chain}:${cur.token}`;
@@ -644,15 +670,18 @@ async function chainSell(ctx: BotContext, percent: number): Promise<void> {
       if (!p) return;
       const amt = BigInt(p.amount);
       if (amt <= 0n) return;
-      const costPortion = (BigInt(p.costNative) * sellAmount) / amt;
-      p.realizedNative = (BigInt(p.realizedNative) + (proceeds - costPortion)).toString();
-      p.amount = (amt - (sellAmount > amt ? amt : sellAmount)).toString();
-      p.costNative = (BigInt(p.costNative) - costPortion).toString();
+      // Clamp the closed portion to the tracked amount so cost basis can't go negative.
+      const sold = sellAmount > amt ? amt : sellAmount;
+      const proceedsUsd = sPriceUsd > 0 ? (Number(sold) / 10 ** sTokMeta.decimals) * sPriceUsd : 0;
+      const costPortionUsd = Number(p.costUsd) * (Number(sold) / Number(amt));
+      p.realizedUsd = (Number(p.realizedUsd) + (proceedsUsd - costPortionUsd)).toFixed(6);
+      p.amount = (amt - sold).toString();
+      p.costUsd = Math.max(0, Number(p.costUsd) - costPortionUsd).toFixed(6);
       p.updatedAt = new Date().toISOString();
     })
     .catch(() => {});
   await ctx.reply(
-    `✅ Sold for <b>~${esc(formatAmount(proceeds, meta.nativeDecimals))} ${esc(meta.nativeSymbol)}</b>\n${link('View transaction', adapter.explorerTx(digest))}`,
+    `✅ Sold for <b>~${esc(formatAmount(BigInt(quote.outAmount), meta.nativeDecimals))} ${esc(meta.nativeSymbol)}</b>\n${link('View transaction', adapter.explorerTx(digest))}`,
     { parse_mode: 'HTML', reply_markup: mainMenu(meta.name) },
   );
 }

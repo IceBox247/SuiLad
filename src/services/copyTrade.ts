@@ -35,6 +35,8 @@ export class CopyTradeService {
 
   async follow(id: string, leaderAddress: string, ratioBps: number, maxSui: string): Promise<CopyConfig> {
     const leader = normalizeSuiAddress(leaderAddress);
+    const maxSuiNum = Number(maxSui);
+    if (!Number.isFinite(maxSuiNum) || maxSuiNum <= 0) throw new Error('Max SUI per copy must be a positive number.');
     const cfg: CopyConfig = {
       id: randomUUID(),
       leaderAddress: leader,
@@ -127,7 +129,9 @@ export class CopyTradeService {
     const u = await this.repo.getUser(fid);
     const cfg = u?.copies.find((c) => c.active && c.leaderAddress === leader);
     if (!u || !cfg) return false;
-    const maxMist = BigInt(Math.round(Number(cfg.maxSui) * 1e9));
+    const maxNum = Number(cfg.maxSui);
+    if (!Number.isFinite(maxNum) || maxNum <= 0) return false; // guard legacy/garbage values
+    const maxMist = BigInt(Math.round(maxNum * 1e9));
     const amount = mirrorAmountMist(buy.suiSpent, cfg.ratioBps, maxMist);
     if (amount <= 0n) return false;
     const signer = await this.wallet.getKeypair(fid);

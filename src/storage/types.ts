@@ -78,17 +78,22 @@ export interface Position {
   updatedAt: string;
 }
 
-/** A tracked position on a non-Sui chain (for cross-chain PnL). */
+/**
+ * A tracked position on a non-Sui chain (for cross-chain PnL). Cost basis and
+ * realized PnL are denominated in USD (decimal strings) so the numbers are
+ * meaningful regardless of the token's reference-pool quote asset. `amount` is
+ * base units, tracked via actual on-chain balance deltas.
+ */
 export interface ChainPosition {
   token: string;
   symbol: string;
   decimals: number;
   /** Token amount currently held (base units), as tracked by the bot. */
   amount: string;
-  /** Total native token (base units) spent acquiring the current amount. */
-  costNative: string;
-  /** Realized PnL in native base units across closed portions. */
-  realizedNative: string;
+  /** Total USD cost of the current amount (decimal string). */
+  costUsd: string;
+  /** Realized PnL in USD across closed portions (decimal string). */
+  realizedUsd: string;
   updatedAt: string;
 }
 

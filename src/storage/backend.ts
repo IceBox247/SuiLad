@@ -152,7 +152,11 @@ export class RedisBackend implements KvBackend {
   }
   async incrWindow(key: string, windowSeconds: number): Promise<number> {
     const n = await this.redis.incr(key);
-    if (n === 1) await this.redis.expire(key, windowSeconds);
+    // Always (re)set the TTL, not only when n===1: a crash between INCR and
+    // EXPIRE on the first hit would otherwise leave a TTL-less key that blocks
+    // the user (rate limit) or stays "seen" (idempotency) forever. Refreshing
+    // the window on every hit is harmless — a spammer simply stays limited.
+    await this.redis.expire(key, windowSeconds);
     return n;
   }
   async acquireLock(key: string, ttlMs: number): Promise<(() => Promise<void>) | null> {
