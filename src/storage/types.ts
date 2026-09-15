@@ -78,6 +78,20 @@ export interface Position {
   updatedAt: string;
 }
 
+/** A tracked position on a non-Sui chain (for cross-chain PnL). */
+export interface ChainPosition {
+  token: string;
+  symbol: string;
+  decimals: number;
+  /** Token amount currently held (base units), as tracked by the bot. */
+  amount: string;
+  /** Total native token (base units) spent acquiring the current amount. */
+  costNative: string;
+  /** Realized PnL in native base units across closed portions. */
+  realizedNative: string;
+  updatedAt: string;
+}
+
 export type OrderKind = 'limit_buy' | 'limit_sell' | 'take_profit' | 'stop_loss' | 'dca';
 
 export interface Order {
@@ -175,6 +189,13 @@ export interface UserRecord {
   launches: LaunchRecord[];
   /** Cashback ledger — a rebate of the user's own trading fees (MIST). */
   cashback?: { unclaimedMist: string; totalMist: string };
+  /**
+   * Per-chain positions for non-Sui chains, keyed by `${chain}:${token}`.
+   * Amounts are base units; `costNative`/`realizedNative` are in the chain's
+   * native token base units. Kept separate from `positions` (which is Sui-only)
+   * so the Sui trading path is untouched.
+   */
+  chainPositions?: Record<string, ChainPosition>;
   /** Per-chain wallets keyed by ChainId (Sui also lives in the top-level fields). */
   wallets?: Record<string, ChainWallet>;
   /** The chain the user is currently trading on (defaults to "sui"). */

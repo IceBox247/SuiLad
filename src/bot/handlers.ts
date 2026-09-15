@@ -79,7 +79,8 @@ async function showChainPicker(ctx: BotContext): Promise<void> {
     '',
     `Currently trading on: <b>${esc(CHAINS[active].name)}</b>`,
     '',
-    'Live now: <b>Sui</b> &amp; <b>Solana</b>. More chains are rolling out.',
+    'Live: <b>Sui · Solana · Ethereum · Base · Arbitrum · Polygon · BNB</b>.',
+    'TON &amp; Tron: wallets &amp; prices live, trading rolling out.',
   ].join('\n');
   const kb = chainPicker(chains, active);
   if (ctx.callbackQuery?.message) {
@@ -129,6 +130,11 @@ async function showWallet(ctx: BotContext): Promise<void> {
 
 async function showPositions(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
+  const chain = await ctx.services.multiWallet.getActiveChain(id);
+  if (chain !== 'sui') {
+    await showChainPositions(ctx, chain);
+    return;
+  }
   const address = (await ctx.services.wallet.getAddress(id))!;
   const holdings = await ctx.services.sui.getHoldings(address).catch(() => []);
   const u = await ctx.services.repo.getUser(id);
@@ -148,6 +154,35 @@ async function showPositions(ctx: BotContext): Promise<void> {
   tokens.forEach((t, i) => {
     if (i % 2 === 0) kb.row();
     kb.text(`${t.symbol} • ${t.formatted}`, `tok:${i}`);
+  });
+  kb.row().text('🔄 Refresh', 'positions').text('⬅️ Menu', 'menu');
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb });
+}
+
+/** Positions view for a non-Sui chain: tracked holdings + realized PnL. */
+async function showChainPositions(ctx: BotContext, chain: ChainId): Promise<void> {
+  const id = tgId(ctx);
+  const meta = CHAINS[chain];
+  const adapter = ctx.services.adapters[chain]!;
+  const address = await ctx.services.multiWallet.ensureWallet(id, chain);
+  const u = await ctx.services.repo.getUser(id);
+  const nativeBal = await adapter.getNativeBalance(address).catch(() => 0n);
+  const positions = Object.entries(u?.chainPositions ?? {})
+    .filter(([k]) => k.startsWith(`${chain}:`))
+    .map(([, p]) => p)
+    .filter((p) => BigInt(p.amount) > 0n || BigInt(p.realizedNative) !== 0n);
+
+  const lines: string[] = [`📊 <b>Positions — ${esc(meta.name)}</b>`, '', `💵 <b>Balance:</b> ${esc(formatAmount(nativeBal, meta.nativeDecimals))} ${esc(meta.nativeSymbol)}`, ''];
+  if (positions.length === 0) lines.push('<i>No tracked positions yet. Paste a token to trade.</i>');
+  const kb = new InlineKeyboard();
+  for (const p of positions) {
+    const realized = Number(BigInt(p.realizedNative)) / 10 ** meta.nativeDecimals;
+    const rl = Math.abs(realized) > 1e-9 ? ` • realized ${realized >= 0 ? '+' : ''}${realized.toPrecision(3)} ${meta.nativeSymbol}` : '';
+    lines.push(`• <b>${esc(p.symbol)}</b>: ${esc(formatAmount(BigInt(p.amount), p.decimals))}${esc(rl)}`);
+  }
+  positions.forEach((p, i) => {
+    if (i % 2 === 0) kb.row();
+    kb.text(`${p.symbol}`, `xt:${p.token}`);
   });
   kb.row().text('🔄 Refresh', 'positions').text('⬅️ Menu', 'menu');
   await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb });
@@ -500,7 +535,15 @@ async function chainCard(ctx: BotContext, token: string, edit = false): Promise<
     lines.push('<i>No market data yet — very new or not on a DEX.</i>');
   }
   lines.push('', `📋 <b>Token</b> (tap to copy)`, code(token), '');
-  if (held > 0n) lines.push(`👜 <b>Holding:</b>  ${esc(formatAmount(held, tokMeta.decimals))} ${esc(sym)}`);
+  if (held > 0n) {
+    lines.push(`👜 <b>Holding:</b>  ${esc(formatAmount(held, tokMeta.decimals))} ${esc(sym)}`);
+    const u = await ctx.services.repo.getUser(id);
+    const cp = u?.chainPositions?.[`${chain}:${token}`];
+    if (cp && info?.priceNative) {
+      const synthetic = { coinType: token, symbol: cp.symbol, decimals: cp.decimals, amount: cp.amount, costMist: cp.costNative, realizedPnlMist: cp.realizedNative, updatedAt: cp.updatedAt };
+      for (const l of pnlLines(synthetic, held, info.priceNative, cp.decimals, meta.nativeSymbol, meta.nativeDecimals)) lines.push(l);
+    }
+  }
   lines.push(`💵 <b>Balance:</b>  ${esc(formatAmount(nativeBal, meta.nativeDecimals))} ${esc(meta.nativeSymbol)}`, '', `👇 <b>Tap an amount to buy</b> (${esc(meta.nativeSymbol)}):`);
 
   const presets = QUICK_PRESETS[chain] ?? ['0.1', '0.5', '1', '5'];
@@ -549,8 +592,24 @@ async function chainBuy(ctx: BotContext, amountNative: string): Promise<void> {
   const secret = await ctx.services.multiWallet.getSecret(id, chain);
   const { digest } = await adapter.swap(secret, quote, req);
   const tokMeta = await adapter.getTokenMeta(cur.token).catch(() => ({ decimals: 18, symbol: cur.token.slice(0, 6) } as { decimals: number; symbol: string }));
+  // Track cost basis for cross-chain PnL (best-effort).
+  const outAmt = BigInt(quote.outAmount);
+  await ctx.services.repo
+    .withUser(id, (uu) => {
+      const key = `${chain}:${cur.token}`;
+      uu.chainPositions = uu.chainPositions ?? {};
+      const p = uu.chainPositions[key];
+      if (p) {
+        p.amount = (BigInt(p.amount) + outAmt).toString();
+        p.costNative = (BigInt(p.costNative) + amount).toString();
+        p.updatedAt = new Date().toISOString();
+      } else {
+        uu.chainPositions[key] = { token: cur.token, symbol: tokMeta.symbol, decimals: tokMeta.decimals, amount: outAmt.toString(), costNative: amount.toString(), realizedNative: '0', updatedAt: new Date().toISOString() };
+      }
+    })
+    .catch(() => {});
   await ctx.reply(
-    `✅ Bought <b>~${esc(formatAmount(BigInt(quote.outAmount), tokMeta.decimals))} ${esc(tokMeta.symbol)}</b> for ${esc(amountNative)} ${esc(meta.nativeSymbol)}\n${link('View transaction', adapter.explorerTx(digest))}`,
+    `✅ Bought <b>~${esc(formatAmount(outAmt, tokMeta.decimals))} ${esc(tokMeta.symbol)}</b> for ${esc(amountNative)} ${esc(meta.nativeSymbol)}\n${link('View transaction', adapter.explorerTx(digest))}`,
     { parse_mode: 'HTML', reply_markup: mainMenu(meta.name) },
   );
 }
@@ -576,8 +635,24 @@ async function chainSell(ctx: BotContext, percent: number): Promise<void> {
   const quote = await adapter.quote(req);
   const secret = await ctx.services.multiWallet.getSecret(id, chain);
   const { digest } = await adapter.swap(secret, quote, req);
+  // Realize PnL against tracked cost basis (best-effort).
+  const proceeds = BigInt(quote.outAmount);
+  await ctx.services.repo
+    .withUser(id, (uu) => {
+      const key = `${chain}:${cur.token}`;
+      const p = uu.chainPositions?.[key];
+      if (!p) return;
+      const amt = BigInt(p.amount);
+      if (amt <= 0n) return;
+      const costPortion = (BigInt(p.costNative) * sellAmount) / amt;
+      p.realizedNative = (BigInt(p.realizedNative) + (proceeds - costPortion)).toString();
+      p.amount = (amt - (sellAmount > amt ? amt : sellAmount)).toString();
+      p.costNative = (BigInt(p.costNative) - costPortion).toString();
+      p.updatedAt = new Date().toISOString();
+    })
+    .catch(() => {});
   await ctx.reply(
-    `✅ Sold for <b>~${esc(formatAmount(BigInt(quote.outAmount), meta.nativeDecimals))} ${esc(meta.nativeSymbol)}</b>\n${link('View transaction', adapter.explorerTx(digest))}`,
+    `✅ Sold for <b>~${esc(formatAmount(proceeds, meta.nativeDecimals))} ${esc(meta.nativeSymbol)}</b>\n${link('View transaction', adapter.explorerTx(digest))}`,
     { parse_mode: 'HTML', reply_markup: mainMenu(meta.name) },
   );
 }
@@ -1476,6 +1551,14 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       return;
     }
     await promptBuyAmount(ctx, coinType);
+  }));
+
+  // Tap a non-Sui position → open its card (token address fits in callback_data).
+  bot.callbackQuery(/^xt:(.+)$/, guard(async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const token = ctx.match![1]!;
+    const cc = await activeNonSui(ctx);
+    if (cc && isChainToken(ctx, token, cc.chain)) await chainCard(ctx, token);
   }));
 
   // --- Non-Sui chain card callbacks (Solana / EVM / …) ---
