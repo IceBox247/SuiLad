@@ -74,6 +74,9 @@ const RawSchema = z.object({
   LAUNCHPAD_PACKAGE_ID: z.string().optional().or(z.literal('')),
   LAUNCHPAD_CONFIG_ID: z.string().optional().or(z.literal('')),
 
+  // Multi-chain RPC endpoints (public defaults; override for reliability).
+  SOLANA_RPC_URL: z.string().url().optional().or(z.literal('')),
+
   // Bridging
   BRIDGE_PROVIDER: z.enum(['mock', 'mayan', 'debridge']).default('mock'),
   BRIDGE_API_BASE_URL: z.string().url().optional().or(z.literal('')),
@@ -120,6 +123,7 @@ export interface AppConfig {
   coinTemplatePath: string;
   launchpadPackageId: string;
   launchpadConfigId: string;
+  solanaRpcUrl: string;
   bridgeProvider: 'mock' | 'mayan' | 'debridge';
   bridgeApiBaseUrl: string;
   enforceAllowlist: boolean;
@@ -193,6 +197,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     coinTemplatePath: raw.COIN_TEMPLATE_PATH || '',
     launchpadPackageId: raw.LAUNCHPAD_PACKAGE_ID || '',
     launchpadConfigId: raw.LAUNCHPAD_CONFIG_ID || '',
+    solanaRpcUrl: raw.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
     bridgeProvider: raw.BRIDGE_PROVIDER,
     bridgeApiBaseUrl: raw.BRIDGE_API_BASE_URL || '',
     rateLimitPerMin: raw.RATE_LIMIT_PER_MIN,

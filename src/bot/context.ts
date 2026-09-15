@@ -18,6 +18,8 @@ import type { BridgeService } from '../bridge/index.js';
 import type { PriceOracle } from '../trade/priceOracle.js';
 import type { DexScreener } from '../services/dexscreener.js';
 import type { ChartService } from '../services/chart.js';
+import type { MultiWalletService } from '../services/multiWallet.js';
+import type { ChainAdapter, ChainId } from '../chains/types.js';
 import type { SessionStore } from './session.js';
 
 export interface Services {
@@ -41,6 +43,10 @@ export interface Services {
   launch: LaunchService;
   launchpad: LaunchpadClient;
   bridge: BridgeService;
+  /** Per-chain wallets for the multi-chain platform. */
+  multiWallet: MultiWalletService;
+  /** Non-Sui chain adapters, keyed by ChainId. */
+  adapters: Partial<Record<ChainId, ChainAdapter>>;
   sessions: SessionStore;
   /** Short-lived cache for objects (prepared quotes, launch params). */
   pending: Map<string, unknown>;

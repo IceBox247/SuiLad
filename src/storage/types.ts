@@ -25,6 +25,14 @@ export function defaultSettings(slippageBps: number): UserSettings {
   };
 }
 
+/** A per-chain wallet (for the multi-chain rollout). Secrets stored encrypted. */
+export interface ChainWallet {
+  address: string;
+  encryptedSecretKey: string;
+  scheme: string;
+  createdAt: string;
+}
+
 export interface SubWallet {
   id: string;
   address: string;
@@ -165,6 +173,10 @@ export interface UserRecord {
   watchlist: WatchItem[];
   trades: TradeRecord[];
   launches: LaunchRecord[];
+  /** Per-chain wallets keyed by ChainId (Sui also lives in the top-level fields). */
+  wallets?: Record<string, ChainWallet>;
+  /** The chain the user is currently trading on (defaults to "sui"). */
+  activeChain?: string;
   /** Optional ban timestamp (ISO) — set by anti-abuse controls. */
   bannedUntil?: string;
   createdAt: string;

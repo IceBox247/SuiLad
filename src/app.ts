@@ -21,6 +21,9 @@ import { BundleService } from './services/bundleService.js';
 import { LaunchService } from './launch/publisher.js';
 import { LaunchpadClient } from './launch/launchpadClient.js';
 import { BridgeService, createBridgeProvider } from './bridge/index.js';
+import { MultiWalletService } from './services/multiWallet.js';
+import { SolanaAdapter } from './chains/solana.js';
+import type { ChainAdapter, ChainId } from './chains/types.js';
 import { SessionStore } from './bot/session.js';
 import { createBot } from './bot/bot.js';
 import type { BotContext, Services } from './bot/context.js';
@@ -79,9 +82,16 @@ export async function buildApp(config: AppConfig): Promise<App> {
   const launchpad = new LaunchpadClient(suiClient, config.launchpadPackageId);
   const bridge = new BridgeService(createBridgeProvider(config));
 
+  // Non-Sui chain adapters (multi-chain trading). Sui keeps its dedicated stack.
+  const adapters: Partial<Record<ChainId, ChainAdapter>> = {
+    solana: new SolanaAdapter(config.solanaRpcUrl),
+  };
+  const multiWallet = new MultiWalletService(repo, config.walletEncryptionKey, adapters);
+
   const services: Services = {
     config, repo, sui, oracle, dex, chart, wallet, trade, referral, payout, security,
     orders, copy, sniper, watchlist, bundle, launch, launchpad, bridge,
+    multiWallet, adapters,
     sessions: new SessionStore(),
     pending: new Map(),
   };
