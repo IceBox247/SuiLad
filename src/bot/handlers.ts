@@ -173,7 +173,7 @@ async function promptBuyAmount(ctx: BotContext, coinType: string, edit = false):
     ctx.services.oracle.priceNumber(coinType).catch(() => null),
     ctx.services.sui.getBalance(address!, SUI_TYPE).catch(() => 0n),
     ctx.services.sui.getBalance(address!, coinType).catch(() => 0n),
-    info?.pairAddress ? ctx.services.chart.chartUrl(info.pairAddress).catch(() => null) : Promise.resolve(null),
+    info?.pairAddress ? ctx.services.chart.chartUrl(info.pairAddress, info.chainId).catch(() => null) : Promise.resolve(null),
   ]);
 
   const priceSui = info?.priceNative || priceNum || 0;

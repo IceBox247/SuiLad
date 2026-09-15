@@ -18,6 +18,8 @@ export interface TokenInfo {
   dexId: string;
   url: string;
   pairAddress: string;
+  /** DexScreener chain id (e.g. "sui", "solana", "bsc") — drives chart lookup. */
+  chainId: string;
 }
 
 interface DsPair {
@@ -91,6 +93,7 @@ function normalize(p: DsPair): TokenInfo {
     dexId: p.dexId,
     url: p.url,
     pairAddress: p.pairAddress,
+    chainId: p.chainId,
   };
 }
 
