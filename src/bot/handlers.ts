@@ -5,7 +5,7 @@ import { HELP, addrLabel, backMenu, code, confirmCancel, esc, homeText, link, ma
 import { SUI_TYPE } from '../sui/service.js';
 import { isValidCoinType, isValidSuiAddress, isPositiveAmount, normalizeSuiAddress } from '../util/validate.js';
 import { isValidSecretKey } from '../sui/wallet.js';
-import { formatAmount, fromBaseUnits } from '../util/format.js';
+import { formatAmount, fromBaseUnits, shortenAddress } from '../util/format.js';
 import { formatUsd, formatPct } from '../services/dexscreener.js';
 import type { PreparedQuote } from '../trade/tradeService.js';
 import type { LaunchParams } from '../launch/types.js';
@@ -180,26 +180,32 @@ async function promptBuyAmount(ctx: BotContext, coinType: string, edit = false):
   const lines: string[] = [`🪙 <b>${esc(info?.name ?? meta.name)}</b>  •  <b>$${esc(info?.symbol ?? meta.symbol)}</b>`, ''];
 
   if (info) {
+    const pooled = info.pooledSui.toLocaleString('en-US', { maximumFractionDigits: 0 });
     lines.push(
-      `💵 <b>$${info.priceUsd.toPrecision(4)}</b>  ·  ${priceSui.toPrecision(4)} SUI`,
+      `💰 <b>Price:</b>  $${info.priceUsd.toPrecision(4)}  ·  ${priceSui.toPrecision(4)} SUI`,
+      `💡 <b>Market Cap:</b>  ${formatUsd(info.mcUsd)}`,
+      `💧 <b>Liquidity:</b>  ${formatUsd(info.liquidityUsd)}`,
+      `🌊 <b>Pooled:</b>  ${pooled} SUI`,
+      `📊 <b>Volume 24h:</b>  ${formatUsd(info.volume24)}`,
+      `🏦 <b>DEX:</b>  ${esc(info.dexId)}`,
+      `🔁 <b>Txns 24h:</b>  ${info.buys24} 🟢  /  ${info.sells24} 🔴`,
       '',
-      `📊 MC:  <b>${formatUsd(info.mcUsd)}</b>`,
-      `💧 Liq: <b>${formatUsd(info.liquidityUsd)}</b>  ·  🌊 ${info.pooledSui.toLocaleString('en-US', { maximumFractionDigits: 0 })} SUI`,
-      `📈 Vol 24h: <b>${formatUsd(info.volume24)}</b>  ·  🏦 ${esc(info.dexId)}`,
-      `🔁 24h: <b>${info.buys24}</b> 🟢  /  <b>${info.sells24}</b> 🔴`,
-      '',
-      `⏱ ${formatPct(info.change1h)} <i>1h</i>   ·   ${formatPct(info.change6h)} <i>6h</i>   ·   ${formatPct(info.change24h)} <i>24h</i>`,
+      `📈 <b>1h</b> ${formatPct(info.change1h)}`,
+      `📉 <b>6h</b> ${formatPct(info.change6h)}`,
+      `🕐 <b>24h</b> ${formatPct(info.change24h)}`,
     );
   } else {
     lines.push(
-      priceSui > 0 ? `📈 <b>${priceSui.toPrecision(6)} SUI</b>` : '📈 <i>no pool / liquidity yet</i>',
+      priceSui > 0 ? `💰 <b>Price:</b>  ${priceSui.toPrecision(6)} SUI` : '💰 <b>Price:</b>  <i>no pool / liquidity yet</i>',
       '<i>No market data yet — very new or not on a DEX.</i>',
     );
   }
 
-  lines.push('', `📋 ${code(coinType)}`);
-  if (held > 0n) lines.push('', `👜 Holding: <b>${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}</b>`);
-  lines.push('', `💰 Balance: <b>${esc(formatAmount(suiBal, 9))} SUI</b>`, '', '👇 <b>Tap an amount to buy</b> — or type a custom amount:');
+  lines.push('', `📋 <b>CA</b> (tap to copy)`, code(coinType));
+  if (info?.pairAddress) lines.push('', `🏊 <b>LP:</b>  ${code(shortenAddress(info.pairAddress, 8, 6))}`);
+  lines.push('');
+  if (held > 0n) lines.push(`👜 <b>Holding:</b>  ${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}`);
+  lines.push(`💵 <b>Balance:</b>  ${esc(formatAmount(suiBal, 9))} SUI`, '', '👇 <b>Tap an amount to buy</b>, or type a custom amount:');
   const text = lines.join('\n');
 
   const net = ctx.services.config.network === 'mainnet' ? 'mainnet' : ctx.services.config.network;
