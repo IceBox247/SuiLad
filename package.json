@@ -23,6 +23,7 @@
     "@mysten/bcs": "^1.6.0",
     "@mysten/move-bytecode-template": "^0.2.0",
     "@mysten/sui": "^1.45.2",
+    "@solana/web3.js": "^1.99.0",
     "@upstash/redis": "^1.38.4",
     "bn.js": "^5.2.1",
     "dotenv": "^16.4.5",
