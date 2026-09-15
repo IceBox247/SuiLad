@@ -59,9 +59,13 @@ const RawSchema = z.object({
   MIN_REFERRAL_CLAIM_SUI: z.coerce.number().min(0).default(0.05),
   REFERRAL_LEVEL_BPS: csvNums([2000, 500, 200, 200, 100]), // % of fee to L1..L5
 
-  // Storage
+  // Storage. Accept both the Upstash names and Vercel's KV integration names
+  // (Vercel auto-injects KV_REST_API_URL / KV_REST_API_TOKEN when you create a
+  // Redis/Upstash store from the Vercel dashboard).
   UPSTASH_REDIS_REST_URL: z.string().url().optional().or(z.literal('')),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional().or(z.literal('')),
+  KV_REST_API_URL: z.string().url().optional().or(z.literal('')),
+  KV_REST_API_TOKEN: z.string().optional().or(z.literal('')),
   DATA_FILE: z.string().default('./data/suipad.json'),
 
   // Launch / launchpad
@@ -146,7 +150,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const levels = raw.REFERRAL_LEVEL_BPS.slice(0, 5);
   while (levels.length < 5) levels.push(0);
 
-  const hasRedis = Boolean(raw.UPSTASH_REDIS_REST_URL && raw.UPSTASH_REDIS_REST_TOKEN);
+  // Prefer explicit Upstash names, fall back to Vercel's KV integration names.
+  const upstashUrl = raw.UPSTASH_REDIS_REST_URL || raw.KV_REST_API_URL || '';
+  const upstashToken = raw.UPSTASH_REDIS_REST_TOKEN || raw.KV_REST_API_TOKEN || '';
+  const hasRedis = Boolean(upstashUrl && upstashToken);
 
   return {
     telegramBotToken: raw.TELEGRAM_BOT_TOKEN,
@@ -165,8 +172,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     minReferralClaimSui: raw.MIN_REFERRAL_CLAIM_SUI,
     referralLevelBps: levels,
     storageBackend: hasRedis ? 'redis' : 'file',
-    upstashUrl: raw.UPSTASH_REDIS_REST_URL || '',
-    upstashToken: raw.UPSTASH_REDIS_REST_TOKEN || '',
+    upstashUrl,
+    upstashToken,
     dataFile: raw.DATA_FILE,
     suiCliPath: raw.SUI_CLI_PATH || '',
     coinTemplatePath: raw.COIN_TEMPLATE_PATH || '',
