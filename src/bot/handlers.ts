@@ -220,6 +220,42 @@ async function showSubwallets(ctx: BotContext): Promise<void> {
 const QUICK_BUY_SUI = ['0.5', '1', '2', '5'];
 
 /**
+ * Build the "avg entry + unrealized PnL since hold" lines for a tracked
+ * position, denominated in the native quote token. `priceNative` is the current
+ * price in native units per token; `heldBase` is the on-chain balance. Returns
+ * [] when there's nothing tracked to compare against.
+ */
+function pnlLines(
+  pos: import('../storage/types.js').Position | undefined,
+  heldBase: bigint,
+  priceNative: number,
+  decimals: number,
+  nativeSymbol: string,
+  nativeDecimals: number,
+): string[] {
+  if (!pos || BigInt(pos.amount) <= 0n || priceNative <= 0) return [];
+  const amountTokens = Number(BigInt(pos.amount)) / 10 ** decimals;
+  const costNative = Number(BigInt(pos.costMist)) / 10 ** nativeDecimals;
+  if (amountTokens <= 0 || costNative <= 0) return [];
+  const avgEntry = costNative / amountTokens;
+  const curValue = priceNative * amountTokens;
+  const pnl = curValue - costNative;
+  const pnlPct = (curValue / costNative - 1) * 100;
+  const up = pnl >= 0;
+  const sign = up ? '+' : '';
+  const arrow = up ? '🟢' : '🔴';
+  const lines = [
+    `🎯 <b>Avg Entry:</b>  ${avgEntry.toPrecision(4)} ${nativeSymbol}`,
+    `${arrow} <b>PnL:</b>  ${sign}${pnl.toPrecision(3)} ${nativeSymbol}  (${sign}${pnlPct.toFixed(1)}%)`,
+  ];
+  const realized = Number(BigInt(pos.realizedPnlMist)) / 10 ** nativeDecimals;
+  if (Math.abs(realized) > 1e-9) {
+    lines.push(`💰 <b>Realized:</b>  ${realized >= 0 ? '+' : ''}${realized.toPrecision(3)} ${nativeSymbol}`);
+  }
+  return lines;
+}
+
+/**
  * Render a rich token card (chart image + price, market cap, liquidity, volume,
  * price change, holdings) with quick-buy buttons. `edit=true` updates the
  * existing message in place (used by Refresh) instead of posting a new one.
@@ -274,7 +310,11 @@ async function promptBuyAmount(ctx: BotContext, coinType: string, edit = false):
   lines.push('', `📋 <b>CA</b> (tap to copy)`, code(coinType));
   if (info?.pairAddress) lines.push('', `🏊 <b>LP:</b>  ${code(shortenAddress(info.pairAddress, 8, 6))}`);
   lines.push('');
-  if (held > 0n) lines.push(`👜 <b>Holding:</b>  ${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}`);
+  if (held > 0n) {
+    lines.push(`👜 <b>Holding:</b>  ${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}`);
+    const pos = user?.positions.find((p) => p.coinType === coinType);
+    for (const l of pnlLines(pos, held, priceSui, meta.decimals, 'SUI', 9)) lines.push(l);
+  }
   lines.push(`💵 <b>Balance:</b>  ${esc(formatAmount(suiBal, 9))} SUI`, '', '👇 <b>Tap an amount to buy</b>, or type a custom amount:');
   const text = lines.join('\n');
 
