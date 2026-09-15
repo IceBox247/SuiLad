@@ -9,6 +9,9 @@ export interface UserSettings {
   priorityGasMist: string;
   /** Quick-buy presets, in SUI (e.g. ["0.1","0.5","1"]). */
   quickBuySui: string[];
+  /** Auto-buy: instantly buy `autoBuySui` when a coin type is pasted. */
+  autoBuy: boolean;
+  autoBuySui: string;
 }
 
 export function defaultSettings(slippageBps: number): UserSettings {
@@ -17,6 +20,8 @@ export function defaultSettings(slippageBps: number): UserSettings {
     mevProtection: true,
     priorityGasMist: '0',
     quickBuySui: ['0.1', '0.5', '1', '5'],
+    autoBuy: false,
+    autoBuySui: '1',
   };
 }
 

@@ -75,8 +75,12 @@ async function showPositions(ctx: BotContext): Promise<void> {
 async function showSettings(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
   const u = (await ctx.services.repo.getUser(id))!;
+  const autoBuy = u.settings.autoBuy;
   const kb = new InlineKeyboard()
-    .text('Set slippage', 'set_slippage')
+    .text(`⚡ Auto-Buy: ${autoBuy ? 'ON' : 'OFF'}`, 'toggle_autobuy')
+    .text(`Auto-Buy amt: ${esc(u.settings.autoBuySui ?? '1')} SUI`, 'set_autobuy')
+    .row()
+    .text(`Slippage: ${u.settings.slippageBps / 100}%`, 'set_slippage')
     .text(`MEV: ${u.settings.mevProtection ? 'ON' : 'OFF'}`, 'toggle_mev')
     .row()
     .text('⬅️ Back', 'menu');
@@ -84,10 +88,15 @@ async function showSettings(ctx: BotContext): Promise<void> {
     [
       '⚙️ <b>Settings</b>',
       '',
+      `⚡ Auto-Buy: <b>${autoBuy ? 'ON' : 'OFF'}</b>${autoBuy ? ` — pasting a token instantly buys <b>${esc(u.settings.autoBuySui ?? '1')} SUI</b>` : ''}`,
       `Slippage: <b>${u.settings.slippageBps / 100}%</b>`,
       `MEV protection: <b>${u.settings.mevProtection ? 'on' : 'off'}</b>`,
       `Network: <b>${esc(ctx.services.config.network)}</b>`,
       `Trading fee: <b>${ctx.services.config.displayFeeBps / 100}%</b>`,
+      '',
+      autoBuy
+        ? '⚠️ With Auto-Buy ON, pasting any coin type spends real SUI immediately.'
+        : '💡 Turn Auto-Buy ON for instant snipes: paste a token → it buys your set amount.',
     ].join('\n'),
     { parse_mode: 'HTML', reply_markup: kb },
   );
@@ -141,11 +150,14 @@ async function promptBuyAmount(ctx: BotContext, coinType: string, edit = false):
   ctx.services.sessions.set(id, { flow: 'buy_amount', data: { coinType } });
   await ctx.services.repo.setMeta(`buytok:${id}`, coinType).catch(() => {});
 
-  const [meta, address, info] = await Promise.all([
+  const [meta, address, info, user] = await Promise.all([
     ctx.services.sui.getCoinMeta(coinType),
     ctx.services.wallet.getAddress(id),
     ctx.services.dex.token(coinType).catch(() => null),
+    ctx.services.repo.getUser(id),
   ]);
+  const autoBuyOn = user?.settings.autoBuy ?? false;
+  const autoBuyAmt = user?.settings.autoBuySui ?? '1';
   const [priceNum, suiBal, held, chartUrl] = await Promise.all([
     ctx.services.oracle.priceNumber(coinType).catch(() => null),
     ctx.services.sui.getBalance(address!, SUI_TYPE).catch(() => 0n),
@@ -184,7 +196,8 @@ async function promptBuyAmount(ctx: BotContext, coinType: string, edit = false):
   kb.text(`🟢 ${QUICK_BUY_SUI[0]} SUI`, `qb:${QUICK_BUY_SUI[0]}`).text(`🟢 ${QUICK_BUY_SUI[1]} SUI`, `qb:${QUICK_BUY_SUI[1]}`).row();
   kb.text(`🟢 ${QUICK_BUY_SUI[2]} SUI`, `qb:${QUICK_BUY_SUI[2]}`).text(`🟢 ${QUICK_BUY_SUI[3]} SUI`, `qb:${QUICK_BUY_SUI[3]}`).row();
   kb.text('✏️ Buy X', 'qb:x').text('🔴 Sell', 'qb:sell').row();
-  kb.text('🎯 Limit', 'qb:lim').text(`⚙️ Slippage ${ctx.services.config.defaultSlippageBps / 100}%`, 'set_slippage').row();
+  kb.text('🎯 Limit', 'qb:lim').text(`⚙️ Slippage ${(user?.settings.slippageBps ?? ctx.services.config.defaultSlippageBps) / 100}%`, 'set_slippage').row();
+  kb.text(`⚡ Auto-Buy: ${autoBuyOn ? `ON (${autoBuyAmt})` : 'OFF'}`, 'qb:auto').row();
   kb.url('📊 Chart', info?.url ?? suiscan).url('🔎 Suiscan', suiscan).url('𝕏 Search', xSearch).row();
   kb.text('🔄 Refresh', 'qb:ref').text('⬅️ Menu', 'menu');
 
@@ -565,6 +578,15 @@ async function onText(ctx: BotContext): Promise<void> {
   const awaitingCoinType = new Set(['buy_token', 'order_token', 'dca_token', 'snipe_token', 'watch_token', 'bundle_token']);
   if (isValidCoinType(text) && !(state && awaitingCoinType.has(state.flow))) {
     await ensureWallet(ctx);
+    const u = await ctx.services.repo.getUser(id);
+    // Auto-buy: paste a CA and it buys instantly, no card, no taps.
+    if (u?.settings.autoBuy) {
+      await ctx.services.repo.setMeta(`buytok:${id}`, text).catch(() => {});
+      ctx.services.sessions.clear(id);
+      await ctx.reply(`⚡ <b>Auto-Buy</b> — buying ${esc(u.settings.autoBuySui)} SUI…`, { parse_mode: 'HTML' });
+      await quickBuy(ctx, u.settings.autoBuySui || '1');
+      return;
+    }
     await promptBuyAmount(ctx, text);
     return;
   }
@@ -631,6 +653,20 @@ async function onText(ctx: BotContext): Promise<void> {
         u.settings.slippageBps = Math.round(pct * 100);
       });
       await ctx.reply(`✅ Slippage set to ${pct}%.`, { reply_markup: backMenu() });
+      return;
+    }
+    case 'autobuy_amount': {
+      if (!isPositiveAmount(text)) throw new Error('Enter a positive SUI amount, e.g. 1');
+      ctx.services.security.assertBuyWithinCap(Number(text));
+      ctx.services.sessions.clear(id);
+      await ctx.services.repo.withUser(id, (u) => {
+        u.settings.autoBuySui = text;
+        u.settings.autoBuy = true;
+      });
+      await ctx.reply(`⚡ Auto-Buy set to <b>${esc(text)} SUI</b> and turned ON.\nPaste any token and it buys instantly.`, {
+        parse_mode: 'HTML',
+        reply_markup: mainMenu(),
+      });
       return;
     }
     case 'launch':
@@ -913,6 +949,14 @@ export function registerHandlers(bot: Bot<BotContext>): void {
     ctx.services.sessions.set(tgId(ctx), { flow: 'set_slippage', data: {} });
     await ctx.reply('Enter slippage % (e.g. 1):');
   });
+  cb('toggle_autobuy', async (ctx) => {
+    await ctx.services.repo.withUser(tgId(ctx), (u) => { u.settings.autoBuy = !u.settings.autoBuy; });
+    await showSettings(ctx);
+  });
+  cb('set_autobuy', async (ctx) => {
+    ctx.services.sessions.set(tgId(ctx), { flow: 'autobuy_amount', data: {} });
+    await ctx.reply('⚡ Enter the <b>Auto-Buy amount</b> in SUI (e.g. <code>1</code>). Pasting a token will instantly buy this much.', { parse_mode: 'HTML' });
+  });
   cb('ref_claim', async (ctx) => {
     const id = tgId(ctx);
     const summary = await ctx.services.referral.summary(id);
@@ -1000,6 +1044,13 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       const meta = await ctx.services.sui.getCoinMeta(coinType);
       ctx.services.sessions.set(id, { flow: 'sell_amount', data: { coinType } });
       await ctx.reply(`🔴 How much <b>${esc(meta.symbol)}</b> to sell? (or a % like <code>50%</code>)`, { parse_mode: 'HTML' });
+      return;
+    }
+    if (arg === 'auto') {
+      await ctx.answerCallbackQuery().catch(() => {});
+      await ctx.services.repo.withUser(id, (u) => { u.settings.autoBuy = !u.settings.autoBuy; });
+      const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
+      if (coinType) await promptBuyAmount(ctx, coinType, true);
       return;
     }
     if (arg === 'lim') {
