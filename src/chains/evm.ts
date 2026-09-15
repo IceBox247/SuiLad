@@ -79,6 +79,16 @@ export class EvmAdapter implements ChainAdapter {
     return createPublicClient({ transport: http(this.rpcUrl) });
   }
 
+  /** Minimal viem Chain so signing uses the correct chainId (EIP-155). */
+  private viemChain() {
+    return {
+      id: this.chainId,
+      name: this.meta.name,
+      nativeCurrency: { name: this.meta.nativeSymbol, symbol: this.meta.nativeSymbol, decimals: this.meta.nativeDecimals },
+      rpcUrls: { default: { http: [this.rpcUrl] } },
+    } as const;
+  }
+
   // --- Wallets -------------------------------------------------------------
 
   async createWallet(): Promise<GeneratedWallet> {
@@ -157,8 +167,11 @@ export class EvmAdapter implements ChainAdapter {
     const { createWalletClient, createPublicClient, http } = await this.viem();
     const { privateKeyToAccount } = await this.viemAccounts();
     const account = privateKeyToAccount(normalizePk(secretKey));
-    const wallet = createWalletClient({ account, transport: http(this.rpcUrl) });
-    const client = createPublicClient({ transport: http(this.rpcUrl) });
+    // Give viem a real chain so it signs with the correct chainId (EIP-155);
+    // signing with no chain risks a replay-unsafe or rejected transaction.
+    const chain = this.viemChain();
+    const wallet = createWalletClient({ account, chain, transport: http(this.rpcUrl) });
+    const client = createPublicClient({ chain, transport: http(this.rpcUrl) });
     const raw = quote.raw as any;
 
     // ERC-20 inputs need an allowance for LI.FI's router before the swap.
@@ -177,7 +190,6 @@ export class EvmAdapter implements ChainAdapter {
           abi: ERC20_ABI,
           functionName: 'approve',
           args: [spender, BigInt(req.amount)],
-          chain: null,
         });
         await client.waitForTransactionReceipt({ hash: approveHash });
       }
@@ -189,7 +201,6 @@ export class EvmAdapter implements ChainAdapter {
       data: tx.data as `0x${string}`,
       value: tx.value ? BigInt(tx.value) : 0n,
       gas: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
-      chain: null,
     });
     await client.waitForTransactionReceipt({ hash }).catch(() => {});
     return { digest: hash, outAmount: quote.outAmount };
