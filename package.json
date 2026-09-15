@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
+    "backtest": "tsx scripts/backtest-chains.ts",
     "build:template": "tsx scripts/build-coin-template.ts",
     "set-webhook": "tsx scripts/set-webhook.ts",
     "e2e:testnet": "tsx scripts/e2e-testnet.ts"

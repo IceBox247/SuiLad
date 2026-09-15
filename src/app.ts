@@ -26,6 +26,7 @@ import { MultiWalletService } from './services/multiWallet.js';
 import { SolanaAdapter } from './chains/solana.js';
 import { EvmAdapter } from './chains/evm.js';
 import { TonAdapter } from './chains/ton.js';
+import { TronAdapter } from './chains/tron.js';
 import { EVM_DEFAULTS } from './chains/meta.js';
 import type { ChainAdapter, ChainId } from './chains/types.js';
 import { SessionStore } from './bot/session.js';
@@ -91,6 +92,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
   const adapters: Partial<Record<ChainId, ChainAdapter>> = {
     solana: new SolanaAdapter(config.solanaRpcUrl),
     ton: new TonAdapter(config.tonApiKey),
+    tron: new TronAdapter(config.tronApiKey),
   };
   // EVM family — one adapter per chain, sharing LI.FI + viem.
   for (const [chain, d] of Object.entries(EVM_DEFAULTS)) {
