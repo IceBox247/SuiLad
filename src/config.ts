@@ -127,7 +127,14 @@ export interface AppConfig {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  const parsed = RawSchema.safeParse(env);
+  // Treat empty-string env vars as unset so schema defaults/optionals apply.
+  // (Pasting a whole .env template into a host often creates blank values like
+  // `SWAP_PROVIDER=`, which would otherwise fail enum/number validation.)
+  const cleaned: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (typeof v === 'string' && v.trim() !== '') cleaned[k] = v;
+  }
+  const parsed = RawSchema.safeParse(cleaned);
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
