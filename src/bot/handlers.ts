@@ -936,14 +936,15 @@ async function bridgeMenu(ctx: BotContext): Promise<void> {
   ctx.services.sessions.set(id, { flow: 'bridge_from', data: {} });
   await ctx.reply(
     [
-      '🌉 <b>Bridge</b>',
+      '🌉 <b>Bridge</b> — move assets across chains',
       '',
-      `Provider: <b>${esc(ctx.services.bridge.providerName)}</b>`,
+      `Powered by <b>${esc(ctx.services.bridge.providerName)}</b> · best-price cross-chain routing.`,
+      'Live: <b>Ethereum · Base · Arbitrum · Polygon · BNB · Solana</b> (Sui rolling out).',
       '',
       'Format: <code>fromChain toChain token amount destAddress</code>',
-      'e.g. <code>sui ethereum USDC 25 0xYourEthAddress</code>',
+      'e.g. <code>polygon arbitrum USDC 25 0xYourAddress</code>',
       '',
-      'Send your bridge request:',
+      'Send your bridge request for a live quote:',
     ].join('\n'),
     { parse_mode: 'HTML' },
   );

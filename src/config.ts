@@ -87,7 +87,7 @@ const RawSchema = z.object({
   TRON_API_KEY: z.string().optional().or(z.literal('')),
 
   // Bridging
-  BRIDGE_PROVIDER: z.enum(['mock', 'mayan', 'debridge']).default('mock'),
+  BRIDGE_PROVIDER: z.enum(['mock', 'mayan', 'debridge', 'lifi']).default('lifi'),
   BRIDGE_API_BASE_URL: z.string().url().optional().or(z.literal('')),
 
   // Security / limits
@@ -138,7 +138,7 @@ export interface AppConfig {
   tronApiKey: string;
   /** Optional per-chain EVM RPC overrides, keyed by ChainId. */
   evmRpc: Record<string, string>;
-  bridgeProvider: 'mock' | 'mayan' | 'debridge';
+  bridgeProvider: 'mock' | 'mayan' | 'debridge' | 'lifi';
   bridgeApiBaseUrl: string;
   enforceAllowlist: boolean;
   rateLimitPerMin: number;

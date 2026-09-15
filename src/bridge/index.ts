@@ -1,10 +1,12 @@
 import type { AppConfig } from '../config.js';
 import { AggregatorBridgeProvider } from './http.js';
+import { LifiBridgeProvider } from './lifi.js';
 import { MockBridgeProvider } from './mock.js';
 import type { BridgeProvider, BridgeQuote, BridgeQuoteRequest } from './types.js';
 
 export * from './types.js';
 export { MockBridgeProvider } from './mock.js';
+export { LifiBridgeProvider, parseLifiBridgeQuote } from './lifi.js';
 export { AggregatorBridgeProvider, parseBridgeQuote } from './http.js';
 
 const DEFAULT_BASE: Record<string, string> = {
@@ -14,6 +16,7 @@ const DEFAULT_BASE: Record<string, string> = {
 
 export function createBridgeProvider(config: AppConfig): BridgeProvider {
   if (config.bridgeProvider === 'mock') return new MockBridgeProvider();
+  if (config.bridgeProvider === 'lifi') return new LifiBridgeProvider();
   const base = config.bridgeApiBaseUrl || DEFAULT_BASE[config.bridgeProvider]!;
   return new AggregatorBridgeProvider(config.bridgeProvider, base);
 }
