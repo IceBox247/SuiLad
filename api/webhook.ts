@@ -52,15 +52,19 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     update = await readJsonBody(req);
   }
 
-  // Always ACK Telegram quickly; process the update, log failures.
+  // IMPORTANT: process the update BEFORE responding. On Vercel the function can
+  // be frozen the instant the response is sent, so replying first would kill
+  // handleUpdate before it can send anything. A /start is fast, so awaiting is
+  // fine; we always return 200 so Telegram doesn't retry.
+  if (update) {
+    try {
+      await bot.handleUpdate(update);
+    } catch (err) {
+      logger.error('handleUpdate failed', { error: (err as Error).message });
+    }
+  }
   res.statusCode = 200;
   res.end('ok');
-  if (!update) return;
-  try {
-    await bot.handleUpdate(update);
-  } catch (err) {
-    logger.error('handleUpdate failed', { error: (err as Error).message });
-  }
 }
 
 function readJsonBody(req: IncomingMessage): Promise<Update | undefined> {
