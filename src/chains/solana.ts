@@ -192,19 +192,31 @@ export class SolanaAdapter implements ChainAdapter {
   }
 
   async getTokenMeta(token: string): Promise<TokenMeta> {
-    let decimals = 9;
+    const short = `${token.slice(0, 4)}…${token.slice(-4)}`;
+    return { address: token, symbol: short, name: short, decimals: (await this.getMintInfo(token)).decimals };
+  }
+
+  /**
+   * On-chain SPL mint safety info: decimals, whether minting is renounced
+   * (mint authority is null) and whether freezing is revoked (freeze authority
+   * is null). These are real, meaningful checks on Solana.
+   */
+  async getMintInfo(token: string): Promise<{ decimals: number; mintRenounced: boolean; freezeRevoked: boolean }> {
     try {
-      const r = await this.rpc<{ value: { data: { parsed: { info: { decimals: number } } } } }>(
+      const r = await this.rpc<{ value: { data: { parsed: { info: { decimals: number; mintAuthority: string | null; freezeAuthority: string | null } } } } }>(
         'getAccountInfo',
         [token, { encoding: 'jsonParsed' }],
       );
-      const d = r?.value?.data?.parsed?.info?.decimals;
-      if (Number.isInteger(d)) decimals = d;
+      const info = r?.value?.data?.parsed?.info;
+      return {
+        decimals: Number.isInteger(info?.decimals) ? info!.decimals : 9,
+        mintRenounced: info ? info.mintAuthority == null : false,
+        freezeRevoked: info ? info.freezeAuthority == null : false,
+      };
     } catch (err) {
-      logger.debug('sol mint decimals failed', { token, e: (err as Error).message });
+      logger.debug('sol mint info failed', { token, e: (err as Error).message });
+      return { decimals: 9, mintRenounced: false, freezeRevoked: false };
     }
-    const short = `${token.slice(0, 4)}…${token.slice(-4)}`;
-    return { address: token, symbol: short, name: short, decimals };
   }
 
   // --- Trading -------------------------------------------------------------

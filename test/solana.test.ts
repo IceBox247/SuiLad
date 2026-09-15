@@ -95,9 +95,16 @@ describe('balances via JSON-RPC (mocked fetch)', () => {
   });
 
   it('reads mint decimals for token meta', async () => {
-    const a = new SolanaAdapter('https://rpc', rpcFetch({ getAccountInfo: { value: { data: { parsed: { info: { decimals: 6 } } } } } }));
+    const a = new SolanaAdapter('https://rpc', rpcFetch({ getAccountInfo: { value: { data: { parsed: { info: { decimals: 6, mintAuthority: null, freezeAuthority: null } } } } } }));
     const meta = await a.getTokenMeta(USDC);
     expect(meta.decimals).toBe(6);
+  });
+
+  it('reports real mint safety (renounced / freeze revoked)', async () => {
+    const renounced = new SolanaAdapter('https://rpc', rpcFetch({ getAccountInfo: { value: { data: { parsed: { info: { decimals: 6, mintAuthority: null, freezeAuthority: null } } } } } }));
+    expect(await renounced.getMintInfo(USDC)).toEqual({ decimals: 6, mintRenounced: true, freezeRevoked: true });
+    const controlled = new SolanaAdapter('https://rpc', rpcFetch({ getAccountInfo: { value: { data: { parsed: { info: { decimals: 6, mintAuthority: 'SomeAuth', freezeAuthority: 'SomeAuth' } } } } } }));
+    expect(await controlled.getMintInfo(USDC)).toEqual({ decimals: 6, mintRenounced: false, freezeRevoked: false });
   });
 
   it('builds solscan explorer links', () => {

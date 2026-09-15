@@ -556,9 +556,27 @@ async function chainCard(ctx: BotContext, token: string, edit = false): Promise<
   } else {
     lines.push('<i>No market data yet — very new or not on a DEX.</i>');
   }
+  // Real Solana mint-safety badges (renounced / freeze revoked).
+  if (chain === 'solana' && 'getMintInfo' in adapter && typeof (adapter as { getMintInfo?: unknown }).getMintInfo === 'function') {
+    const safety = await (adapter as unknown as { getMintInfo(t: string): Promise<{ mintRenounced: boolean; freezeRevoked: boolean }> }).getMintInfo(token).catch(() => null);
+    if (safety) {
+      lines.push(
+        '',
+        `🧑‍🌾 <b>Mint renounced:</b> ${safety.mintRenounced ? '✅' : '⚠️ no'}`,
+        `❄️ <b>Freeze revoked:</b> ${safety.freezeRevoked ? '✅' : '⚠️ no'}`,
+      );
+    }
+  }
+  if (info && info.pooledSui > 0) lines.push(`🌊 <b>Pooled:</b> ${info.pooledSui.toLocaleString('en-US', { maximumFractionDigits: 0 })} (quote)`);
   lines.push('', `📋 <b>Token</b> (tap to copy)`, code(token), '');
   if (held > 0n) {
+    const heldHuman = Number(held) / 10 ** tokMeta.decimals;
     lines.push(`👜 <b>Holding:</b>  ${esc(formatAmount(held, tokMeta.decimals))} ${esc(sym)}`);
+    if (info && info.priceNative > 0) {
+      const worthNative = heldHuman * info.priceNative;
+      const worthUsd = heldHuman * info.priceUsd;
+      lines.push(`💎 <b>Worth:</b>  ${worthNative.toPrecision(4)} ${esc(meta.nativeSymbol)}  ·  ${formatUsd(worthUsd)}`);
+    }
     const u = await ctx.services.repo.getUser(id);
     const cp = u?.chainPositions?.[`${chain}:${token}`];
     if (cp && info) for (const l of chainPnlLines(cp, info.priceUsd)) lines.push(l);
@@ -634,8 +652,10 @@ async function chainBuy(ctx: BotContext, amountNative: string): Promise<void> {
     .catch(() => {});
   await ctx.reply(
     `✅ Bought <b>~${esc(formatAmount(received, tokMeta.decimals))} ${esc(tokMeta.symbol)}</b> for ${esc(amountNative)} ${esc(meta.nativeSymbol)}\n${link('View transaction', adapter.explorerTx(digest))}`,
-    { parse_mode: 'HTML', reply_markup: mainMenu(meta.name) },
+    { parse_mode: 'HTML' },
   );
+  // Re-show the position card so the new holding, worth & PnL are visible.
+  await chainCard(ctx, cur.token).catch(() => {});
 }
 
 /** Execute a sell of `percent` of the held token → native, on the active chain. */
@@ -682,8 +702,10 @@ async function chainSell(ctx: BotContext, percent: number): Promise<void> {
     .catch(() => {});
   await ctx.reply(
     `✅ Sold for <b>~${esc(formatAmount(BigInt(quote.outAmount), meta.nativeDecimals))} ${esc(meta.nativeSymbol)}</b>\n${link('View transaction', adapter.explorerTx(digest))}`,
-    { parse_mode: 'HTML', reply_markup: mainMenu(meta.name) },
+    { parse_mode: 'HTML' },
   );
+  // Re-show the position card so the updated holding & PnL are visible.
+  await chainCard(ctx, cur.token).catch(() => {});
 }
 
 async function startBuy(ctx: BotContext, coinType?: string): Promise<void> {
