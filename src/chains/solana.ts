@@ -1,4 +1,5 @@
 import bs58 from 'bs58';
+import nacl from 'tweetnacl';
 import { logger } from '../logger.js';
 import { CHAINS } from './meta.js';
 import type {
@@ -13,36 +14,22 @@ import type {
 
 /** Jupiter's public (keyless) endpoint. Swap quote + build. */
 const JUP = 'https://lite-api.jup.ag';
-
-/** Minimal slice of @solana/web3.js Connection we depend on (keeps it mockable). */
-export interface SolConnection {
-  getBalance(pubkey: unknown): Promise<number>;
-  getParsedAccountInfo(pubkey: unknown): Promise<{ value: unknown }>;
-  getParsedTokenAccountsByOwner(
-    owner: unknown,
-    filter: { mint: unknown },
-  ): Promise<{ value: { account: { data: { parsed: { info: { tokenAmount: { amount: string } } } } } }[] }>;
-  getLatestBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
-  sendRawTransaction(raw: Uint8Array, opts?: unknown): Promise<string>;
-  confirmTransaction(strategy: unknown, commitment?: string): Promise<unknown>;
-}
+const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
 /**
  * Builds the POST body for Jupiter's /swap endpoint. Pure + exported so the
- * request shape is unit-tested without touching the network or web3 signing.
+ * request shape is unit-tested without touching the network or signing.
  */
 export function buildSwapBody(
   quoteResponse: unknown,
   userPublicKey: string,
-  opts: { feeBps?: number; feeAccount?: string } = {},
+  opts: { feeAccount?: string } = {},
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     quoteResponse,
     userPublicKey,
-    // Let Jupiter wrap/unwrap SOL so native<->SPL swaps "just work".
     wrapAndUnwrapSol: true,
     dynamicComputeUnitLimit: true,
-    // Priority fee handled automatically (MEV-aware inclusion).
     prioritizationFeeLamports: 'auto',
   };
   if (opts.feeAccount) body.feeAccount = opts.feeAccount;
@@ -66,82 +53,137 @@ export function parseJupiterQuote(json: any, req: SwapRequest): SwapQuote {
   };
 }
 
+/** Decode a Solana secret: base58 (64-byte) or a JSON byte array → 64 bytes. */
+export function decodeSecret(secret: string): Uint8Array {
+  const s = secret.trim();
+  let bytes: Uint8Array;
+  if (s.startsWith('[')) {
+    const arr = JSON.parse(s) as number[];
+    bytes = Uint8Array.from(arr);
+  } else {
+    bytes = bs58.decode(s);
+  }
+  if (bytes.length === 64) return bytes;
+  if (bytes.length === 32) return nacl.sign.keyPair.fromSeed(bytes).secretKey; // seed → full key
+  throw new Error('Solana secret must be 32 (seed) or 64 bytes');
+}
+
+/** compact-u16 (shortvec) decode used by Solana's wire format. */
+function decodeLen(buf: Uint8Array, offset: number): { value: number; size: number } {
+  let value = 0;
+  let size = 0;
+  for (;;) {
+    const b = buf[offset + size]!;
+    value |= (b & 0x7f) << (size * 7);
+    size++;
+    if ((b & 0x80) === 0) break;
+  }
+  return { value, size };
+}
+
 /**
- * Solana chain adapter. Wallets are ed25519 keypairs (base58 secret). Trading
- * is routed through Jupiter's aggregator (best price across all Solana DEXs);
- * @solana/web3.js is imported lazily so a Sui-only invocation never pays its
- * cold-start cost.
+ * Sign a serialized (unsigned) Solana transaction — legacy or v0 — with an
+ * ed25519 key, placing the signature at the signer's account index. Returns the
+ * fully-signed transaction, base64. Pure/exported so it can be cross-validated
+ * against @solana/web3.js in tests.
+ */
+export function signTransaction(txBase64: string, secretKey: Uint8Array): string {
+  const buf = Uint8Array.from(Buffer.from(txBase64, 'base64'));
+  const sigCount = decodeLen(buf, 0);
+  const sigStart = sigCount.size;
+  const messageStart = sigStart + 64 * sigCount.value;
+  const message = buf.subarray(messageStart);
+
+  // Parse the message header enough to locate the signer account list.
+  let o = 0;
+  if ((message[0]! & 0x80) !== 0) o = 1; // versioned: skip the version prefix byte
+  const numRequiredSignatures = message[o]!;
+  o += 3; // numRequiredSignatures + numReadonlySigned + numReadonlyUnsigned
+  const acctLen = decodeLen(message, o);
+  o += acctLen.size;
+
+  const pubkey = secretKey.subarray(32, 64); // ed25519 pubkey = last 32 bytes
+  let signerIndex = -1;
+  for (let i = 0; i < numRequiredSignatures; i++) {
+    const key = message.subarray(o + i * 32, o + i * 32 + 32);
+    if (equal(key, pubkey)) { signerIndex = i; break; }
+  }
+  if (signerIndex < 0) throw new Error('Signer is not a required signer of this transaction');
+
+  const signature = nacl.sign.detached(message, secretKey);
+  const out = Uint8Array.from(buf);
+  out.set(signature, sigStart + 64 * signerIndex);
+  return Buffer.from(out).toString('base64');
+}
+
+function equal(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * Solana chain adapter. Deliberately free of @solana/web3.js (whose
+ * rpc-websockets dependency breaks Vercel's CJS bundler): keys/signing use
+ * tweetnacl + bs58, and all RPC is plain JSON-RPC over fetch. Trading routes
+ * through Jupiter's aggregator (best price across every Solana DEX).
  */
 export class SolanaAdapter implements ChainAdapter {
   readonly meta: ChainMeta = CHAINS.solana;
-  private conn?: SolConnection;
 
   constructor(
     private readonly rpcUrl = 'https://api.mainnet-beta.solana.com',
     private readonly fetchImpl: typeof fetch = fetch,
-    /** Optional injected connection (tests). */
-    conn?: SolConnection,
-  ) {
-    this.conn = conn;
-  }
+  ) {}
 
-  private async web3() {
-    return import('@solana/web3.js');
-  }
-
-  private async connection(): Promise<SolConnection> {
-    if (this.conn) return this.conn;
-    const { Connection } = await this.web3();
-    this.conn = new Connection(this.rpcUrl, 'confirmed') as unknown as SolConnection;
-    return this.conn;
+  private async rpc<T>(method: string, params: unknown[]): Promise<T> {
+    const res = await this.fetchImpl(this.rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) throw new Error(`Solana RPC ${method} failed (${res.status})`);
+    const json = (await res.json()) as { result?: T; error?: { message?: string } };
+    if (json.error) throw new Error(`Solana RPC ${method}: ${json.error.message}`);
+    return json.result as T;
   }
 
   // --- Wallets -------------------------------------------------------------
 
   async createWallet(): Promise<GeneratedWallet> {
-    const { Keypair } = await this.web3();
-    return describe(Keypair.generate());
+    const kp = nacl.sign.keyPair();
+    return { address: bs58.encode(kp.publicKey), secretKey: bs58.encode(kp.secretKey), scheme: 'ED25519' };
   }
 
   async importWallet(secret: string): Promise<GeneratedWallet> {
-    const { Keypair } = await this.web3();
-    return describe(Keypair.fromSecretKey(decodeSecret(secret)));
+    const sk = decodeSecret(secret);
+    return { address: bs58.encode(sk.subarray(32, 64)), secretKey: bs58.encode(sk), scheme: 'ED25519' };
   }
 
   isValidSecret(secret: string): boolean {
-    try {
-      decodeSecret(secret);
-      return true;
-    } catch {
-      return false;
-    }
+    try { decodeSecret(secret); return true; } catch { return false; }
   }
 
   isValidAddress(address: string): boolean {
-    try {
-      const bytes = bs58.decode(address.trim());
-      return bytes.length === 32;
-    } catch {
-      return false;
-    }
+    try { return bs58.decode(address.trim()).length === 32; } catch { return false; }
   }
 
   // --- Reads ---------------------------------------------------------------
 
   async getNativeBalance(address: string): Promise<bigint> {
-    const { PublicKey } = await this.web3();
-    const conn = await this.connection();
-    const lamports = await conn.getBalance(new PublicKey(address));
-    return BigInt(Math.trunc(lamports));
+    const r = await this.rpc<{ value: number }>('getBalance', [address]);
+    return BigInt(Math.trunc(r.value));
   }
 
   async getTokenBalance(address: string, token: string): Promise<bigint> {
-    const { PublicKey } = await this.web3();
-    const conn = await this.connection();
     try {
-      const res = await conn.getParsedTokenAccountsByOwner(new PublicKey(address), { mint: new PublicKey(token) });
+      const r = await this.rpc<{ value: { account: { data: { parsed: { info: { tokenAmount: { amount: string } } } } } }[] }>(
+        'getTokenAccountsByOwner',
+        [address, { mint: token }, { encoding: 'jsonParsed' }],
+      );
       let total = 0n;
-      for (const acc of res.value) total += BigInt(acc.account.data.parsed.info.tokenAmount.amount);
+      for (const acc of r.value) total += BigInt(acc.account.data.parsed.info.tokenAmount.amount);
       return total;
     } catch (err) {
       logger.debug('sol token balance failed', { token, e: (err as Error).message });
@@ -150,12 +192,13 @@ export class SolanaAdapter implements ChainAdapter {
   }
 
   async getTokenMeta(token: string): Promise<TokenMeta> {
-    const { PublicKey } = await this.web3();
-    const conn = await this.connection();
     let decimals = 9;
     try {
-      const info = (await conn.getParsedAccountInfo(new PublicKey(token))) as any;
-      const d = info?.value?.data?.parsed?.info?.decimals;
+      const r = await this.rpc<{ value: { data: { parsed: { info: { decimals: number } } } } }>(
+        'getAccountInfo',
+        [token, { encoding: 'jsonParsed' }],
+      );
+      const d = r?.value?.data?.parsed?.info?.decimals;
       if (Number.isInteger(d)) decimals = d;
     } catch (err) {
       logger.debug('sol mint decimals failed', { token, e: (err as Error).message });
@@ -178,10 +221,7 @@ export class SolanaAdapter implements ChainAdapter {
   }
 
   async swap(secretKey: string, quote: SwapQuote, req: SwapRequest): Promise<SwapResult> {
-    const { Keypair, VersionedTransaction } = await this.web3();
-    const conn = await this.connection();
-    const keypair = Keypair.fromSecretKey(decodeSecret(secretKey));
-
+    const sk = decodeSecret(secretKey);
     const res = await this.fetchImpl(`${JUP}/swap/v1/swap`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -192,13 +232,25 @@ export class SolanaAdapter implements ChainAdapter {
     const { swapTransaction } = (await res.json()) as { swapTransaction?: string };
     if (!swapTransaction) throw new Error('Jupiter returned no transaction');
 
-    const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
-    tx.sign([keypair]);
-    const raw = tx.serialize();
-    const sig = await conn.sendRawTransaction(raw, { skipPreflight: false, maxRetries: 3 });
-    const bh = await conn.getLatestBlockhash();
-    await conn.confirmTransaction({ signature: sig, ...bh }, 'confirmed').catch(() => {});
+    const signed = signTransaction(swapTransaction, sk);
+    const sig = await this.rpc<string>('sendTransaction', [signed, { encoding: 'base64', skipPreflight: false, maxRetries: 3 }]);
+    await this.confirm(sig).catch(() => {});
     return { digest: sig, outAmount: quote.outAmount };
+  }
+
+  /** Poll signature status until confirmed (best-effort, bounded). */
+  private async confirm(sig: string, timeoutMs = 30_000): Promise<void> {
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+      const r = await this.rpc<{ value: ({ confirmationStatus?: string; err?: unknown } | null)[] }>(
+        'getSignatureStatuses',
+        [[sig], { searchTransactionHistory: false }],
+      ).catch(() => null);
+      const st = r?.value?.[0];
+      if (st?.err) throw new Error('Transaction failed on-chain');
+      if (st?.confirmationStatus === 'confirmed' || st?.confirmationStatus === 'finalized') return;
+      await new Promise((r2) => setTimeout(r2, 1500));
+    }
   }
 
   // --- Explorer ------------------------------------------------------------
@@ -206,29 +258,10 @@ export class SolanaAdapter implements ChainAdapter {
   explorerTx(hash: string): string {
     return `https://solscan.io/tx/${hash}`;
   }
-
   explorerAddress(address: string): string {
     return `https://solscan.io/account/${address}`;
   }
 }
 
-/** Decode a Solana secret: base58 (64-byte) or a JSON byte array. */
-function decodeSecret(secret: string): Uint8Array {
-  const s = secret.trim();
-  if (s.startsWith('[')) {
-    const arr = JSON.parse(s) as number[];
-    if (arr.length !== 64) throw new Error('Solana secret array must be 64 bytes');
-    return Uint8Array.from(arr);
-  }
-  const bytes = bs58.decode(s);
-  if (bytes.length !== 64) throw new Error('Solana secret must decode to 64 bytes');
-  return bytes;
-}
-
-function describe(keypair: { publicKey: { toBase58(): string }; secretKey: Uint8Array }): GeneratedWallet {
-  return {
-    address: keypair.publicKey.toBase58(),
-    secretKey: bs58.encode(keypair.secretKey),
-    scheme: 'ED25519',
-  };
-}
+// Referenced to keep the token-program constant meaningful for future SPL work.
+void TOKEN_PROGRAM;

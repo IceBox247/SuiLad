@@ -54,6 +54,15 @@ export const EVM_CHAIN_ID: Partial<Record<ChainId, number>> = {
   bsc: 56,
 };
 
+/** Public RPC + explorer defaults per EVM chain (override RPC via config). */
+export const EVM_DEFAULTS: Partial<Record<ChainId, { rpc: string; explorer: string; lifiChain: string }>> = {
+  ethereum: { rpc: 'https://eth.llamarpc.com', explorer: 'https://etherscan.io', lifiChain: 'ETH' },
+  base: { rpc: 'https://mainnet.base.org', explorer: 'https://basescan.org', lifiChain: 'BAS' },
+  arbitrum: { rpc: 'https://arb1.arbitrum.io/rpc', explorer: 'https://arbiscan.io', lifiChain: 'ARB' },
+  polygon: { rpc: 'https://polygon-rpc.com', explorer: 'https://polygonscan.com', lifiChain: 'POL' },
+  bsc: { rpc: 'https://bsc-dataseed.binance.org', explorer: 'https://bscscan.com', lifiChain: 'BSC' },
+};
+
 export function isChainId(x: string): x is ChainId {
   return x in CHAINS;
 }
