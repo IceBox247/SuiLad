@@ -96,6 +96,7 @@ Every setting is an env var — see [`.env.example`](./.env.example). Highlights
 | `LAUNCHPAD_PACKAGE_ID` | Deployed bonding-curve package (see `move/launchpad`). |
 | `BRIDGE_PROVIDER` | `mayan` / `debridge` / `mock`. |
 | `ENFORCE_ALLOWLIST` | `true` makes the bot private (default: public). |
+| `CASHBACK_BPS` | Share of each user's own fee rebated to them (default 2000 = 20%). |
 | `ALLOWED_TELEGRAM_IDS` / `ADMIN_TELEGRAM_IDS` | Access control (allowlist only applies when `ENFORCE_ALLOWLIST=true`). |
 | `WEBHOOK_SECRET` / `CRON_SECRET` | Required to secure the Vercel endpoints. |
 

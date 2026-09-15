@@ -205,6 +205,33 @@ async function showReferral(ctx: BotContext): Promise<void> {
   );
 }
 
+async function showCashback(ctx: BotContext): Promise<void> {
+  const id = await ensureWallet(ctx);
+  const s = await ctx.services.cashback.summary(id);
+  const minClaim = ctx.services.config.minReferralClaimSui;
+  const canClaim = ctx.services.payout && Number(formatAmount(s.unclaimedMist, 9)) >= minClaim;
+  const kb = new InlineKeyboard();
+  if (ctx.services.payout) kb.text('💸 Claim', 'cashback_claim').row();
+  kb.text('⬅️ Back', 'menu');
+  await ctx.reply(
+    [
+      '💸 <b>Cashback</b>',
+      '',
+      `You get <b>${s.rateBps / 100}% of every trading fee</b> you pay back as cashback — automatically, on every trade.`,
+      '',
+      `Unclaimed: <b>${formatAmount(s.unclaimedMist, 9)} SUI</b>`,
+      `Lifetime: <b>${formatAmount(s.totalMist, 9)} SUI</b>`,
+      '',
+      ctx.services.payout
+        ? canClaim
+          ? '✅ Tap Claim to receive your cashback on-chain.'
+          : `Minimum to claim: <b>${minClaim} SUI</b>. Keep trading to earn more.`
+        : 'ℹ️ Cashback accrues now; on-chain claims enable once the operator configures payouts.',
+    ].join('\n'),
+    { parse_mode: 'HTML', reply_markup: kb },
+  );
+}
+
 async function showSubwallets(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
   const wallets = await ctx.services.wallet.allWallets(id);
@@ -1237,6 +1264,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   bot.command(['balance', 'balances', 'positions'], guard(showPositions));
   bot.command('settings', guard(showSettings));
   bot.command('referral', guard(showReferral));
+  bot.command('cashback', guard(showCashback));
   bot.command('send', guard(startSend));
   bot.command('launch', guard(startLaunch));
   bot.command('limit', guard(ordersMenu));
@@ -1304,6 +1332,33 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   cb('positions', showPositions);
   cb('settings', showSettings);
   cb('referral', showReferral);
+  cb('cashback', showCashback);
+  cb('cashback_claim', async (ctx) => {
+    const id = tgId(ctx);
+    const s = await ctx.services.cashback.summary(id);
+    if (s.unclaimedMist <= 0n) {
+      await ctx.reply('No cashback to claim yet. Trade to earn cashback.', { reply_markup: backMenu() });
+      return;
+    }
+    if (!ctx.services.payout) {
+      await ctx.reply(`You have ${formatAmount(s.unclaimedMist, 9)} SUI in cashback. On-chain claims enable once the operator configures payouts.`, { reply_markup: backMenu() });
+      return;
+    }
+    if (!(await ctx.services.security.firstSeen(`cbclaim:${id}`, 60))) {
+      await ctx.reply('A claim is already being processed. Please wait a moment.', { reply_markup: backMenu() });
+      return;
+    }
+    await ctx.reply('⏳ Sending your cashback…');
+    const result = await ctx.services.payout.claimCashback(id);
+    if (!result) {
+      await ctx.reply(`Minimum claim is ${ctx.services.config.minReferralClaimSui} SUI. Keep trading and try again.`, { reply_markup: backMenu() });
+      return;
+    }
+    await ctx.reply(
+      `✅ Paid ${formatAmount(result.amountMist, 9)} SUI cashback to your wallet.\n${link('View transaction', ctx.services.sui.txUrl(result.digest))}`,
+      { parse_mode: 'HTML', reply_markup: mainMenu() },
+    );
+  });
   cb('help', async (ctx) => { await ctx.reply(HELP, { parse_mode: 'HTML', reply_markup: backMenu() }); });
   cb('buy', async (ctx) => startBuy(ctx));
   cb('sell', startSell);

@@ -59,6 +59,7 @@ export const BOT_COMMANDS = [
   { command: 'launch', description: 'Launch a coin' },
   { command: 'bridge', description: 'Bridge across chains' },
   { command: 'referral', description: 'Referral link & earnings' },
+  { command: 'cashback', description: '20% fee cashback' },
   { command: 'wallet', description: 'Wallet & export key' },
   { command: 'settings', description: 'Slippage & preferences' },
   { command: 'help', description: 'Show help' },

@@ -58,6 +58,8 @@ const RawSchema = z.object({
   // Minimum claimable referral balance in SUI (covers gas; avoids dust claims).
   MIN_REFERRAL_CLAIM_SUI: z.coerce.number().min(0).default(0.05),
   REFERRAL_LEVEL_BPS: csvNums([2000, 500, 200, 200, 100]), // % of fee to L1..L5
+  // Cashback: share of each user's OWN trading fee rebated back to them.
+  CASHBACK_BPS: z.coerce.number().int().min(0).max(10000).default(2000), // 20% of fee
 
   // Storage. Accept both the Upstash names and Vercel's KV integration names
   // (Vercel auto-injects KV_REST_API_URL / KV_REST_API_TOKEN when you create a
@@ -120,6 +122,7 @@ export interface AppConfig {
   feeWalletSecret: string;
   minReferralClaimSui: number;
   referralLevelBps: number[];
+  cashbackBps: number;
   storageBackend: 'redis' | 'file';
   upstashUrl: string;
   upstashToken: string;
@@ -196,6 +199,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     feeWalletSecret: raw.FEE_WALLET_SECRET || '',
     minReferralClaimSui: raw.MIN_REFERRAL_CLAIM_SUI,
     referralLevelBps: levels,
+    cashbackBps: raw.CASHBACK_BPS,
     storageBackend: hasRedis ? 'redis' : 'file',
     upstashUrl,
     upstashToken,

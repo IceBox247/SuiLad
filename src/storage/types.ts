@@ -173,6 +173,8 @@ export interface UserRecord {
   watchlist: WatchItem[];
   trades: TradeRecord[];
   launches: LaunchRecord[];
+  /** Cashback ledger — a rebate of the user's own trading fees (MIST). */
+  cashback?: { unclaimedMist: string; totalMist: string };
   /** Per-chain wallets keyed by ChainId (Sui also lives in the top-level fields). */
   wallets?: Record<string, ChainWallet>;
   /** The chain the user is currently trading on (defaults to "sui"). */

@@ -35,9 +35,10 @@ export function mainMenu(activeChainLabel = 'Sui'): InlineKeyboard {
     .text('🌉 Bridge', 'bridge')
     .text('🎁 Referrals', 'referral')
     .row()
+    .text('💸 Cashback', 'cashback')
     .text('⚙️ Settings', 'settings')
-    .text('❓ Help', 'help')
     .row()
+    .text('❓ Help', 'help')
     .text('🔄 Refresh', 'home_ref');
 }
 
@@ -117,6 +118,7 @@ export const HELP = [
   '/launch — launch a coin (bonding curve)',
   '/bridge — bridge across chains',
   '/referral — your referral link &amp; earnings',
+  '/cashback — 20% of your trading fees, rebated to you',
   '',
   '<b>Account</b>',
   '/wallet • /settings • /start',

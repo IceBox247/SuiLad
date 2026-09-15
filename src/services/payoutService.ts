@@ -70,6 +70,39 @@ export class PayoutService {
       throw err;
     }
   }
+
+  /**
+   * Claim and pay a user's unclaimed cashback to their wallet. Same
+   * reserve-then-refund safety as {@link claim}.
+   */
+  async claimCashback(userId: string): Promise<ClaimResult | null> {
+    let amount = 0n;
+    let address = '';
+    await this.repo.withUser(userId, (u) => {
+      const cb = u.cashback ?? { unclaimedMist: '0', totalMist: '0' };
+      const unclaimed = BigInt(cb.unclaimedMist);
+      if (unclaimed < this.minClaimMist) return;
+      amount = unclaimed;
+      address = u.address;
+      cb.unclaimedMist = '0';
+      u.cashback = cb;
+    });
+    if (amount <= 0n) return null;
+
+    try {
+      const { digest } = await this.sui.transfer({ signer: this.feeKeypair, recipient: address, coinType: SUI_TYPE, amount });
+      return { amountMist: amount, digest };
+    } catch (err) {
+      await this.repo
+        .withUser(userId, (u) => {
+          const cb = u.cashback ?? { unclaimedMist: '0', totalMist: '0' };
+          cb.unclaimedMist = (BigInt(cb.unclaimedMist) + amount).toString();
+          u.cashback = cb;
+        })
+        .catch((e) => logger.error('cashback refund failed', { userId, e: (e as Error).message }));
+      throw err;
+    }
+  }
 }
 
 /** Accept either a bech32 `suiprivkey…` or a raw hex secret for the fee wallet. */

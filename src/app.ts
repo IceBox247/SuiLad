@@ -10,6 +10,7 @@ import { DexScreener } from './services/dexscreener.js';
 import { ChartService } from './services/chart.js';
 import { WalletService } from './services/walletService.js';
 import { ReferralService } from './services/referralService.js';
+import { CashbackService } from './services/cashbackService.js';
 import { PayoutService } from './services/payoutService.js';
 import { SecurityService } from './services/security.js';
 import { TradeService } from './trade/tradeService.js';
@@ -52,6 +53,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
 
   const wallet = new WalletService(repo, config.walletEncryptionKey, config.maxSubWallets);
   const referral = new ReferralService(repo, config.referralLevelBps);
+  const cashback = new CashbackService(repo, config.cashbackBps);
   const payout = config.feeWalletSecret
     ? new PayoutService(repo, sui, config.feeWalletSecret, BigInt(Math.round(config.minReferralClaimSui * 1e9)))
     : undefined;
@@ -66,7 +68,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
     tradingFeeBps: config.tradingFeeBps,
     displayFeeBps: config.displayFeeBps,
     feeWallet: config.feeWalletAddress,
-  });
+  }, cashback);
 
   // Notifier bridges automation → Telegram messages (wired after the bot exists).
   const holder: { send: Notifier } = { send: async () => {} };
@@ -95,7 +97,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
   const multiWallet = new MultiWalletService(repo, config.walletEncryptionKey, adapters);
 
   const services: Services = {
-    config, repo, sui, oracle, dex, chart, wallet, trade, referral, payout, security,
+    config, repo, sui, oracle, dex, chart, wallet, trade, referral, cashback, payout, security,
     orders, copy, sniper, watchlist, bundle, launch, launchpad, bridge,
     multiWallet, adapters,
     sessions: new SessionStore(),

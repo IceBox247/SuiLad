@@ -44,6 +44,7 @@ export class TradeService {
     private readonly repo: Repo,
     private readonly referral: ReferralService,
     private readonly opts: TradeServiceOptions,
+    private readonly cashback?: import('../services/cashbackService.js').CashbackService,
   ) {}
 
   async prepareQuote(params: {
@@ -170,9 +171,10 @@ export class TradeService {
         updatePosition(u.positions, prepared);
       });
 
-      // Referral payout accrues from the platform fee (best-effort).
+      // Referral payout + trader cashback accrue from the platform fee (best-effort).
       if (prepared.feeSuiValue > 0n) {
         await this.referral.creditFees(telegramId, prepared.feeSuiValue).catch(() => {});
+        await this.cashback?.credit(telegramId, prepared.feeSuiValue).catch(() => {});
       }
       return { digest, tradeId };
     } catch (err) {
