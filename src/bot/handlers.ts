@@ -402,8 +402,17 @@ async function ordersMenu(ctx: BotContext): Promise<void> {
     .text('🔁 DCA', 'order:dca')
     .row()
     .text('⬅️ Back', 'menu');
-  const lines = ['🎯 <b>Automated Orders</b>', ''];
-  if (orders.length === 0) lines.push('<i>No active orders.</i>');
+  const lines = [
+    '🎯 <b>Automated Orders</b>',
+    '',
+    '📉 <b>Limit Buy</b> — buy when the price falls to your target',
+    '📈 <b>Limit Sell</b> — sell when the price rises to your target',
+    '🎯 <b>Take Profit</b> / 🛑 <b>Stop Loss</b> — auto-sell at a target/floor',
+    '🔁 <b>DCA</b> — split a buy into scheduled chunks',
+    '',
+    '<b>Active orders</b>',
+  ];
+  if (orders.length === 0) lines.push('<i>None yet — tap a type below to create one.</i>');
   for (const o of orders) {
     lines.push(
       `• ${esc(o.kind)} ${esc(o.coinType.split('::').pop() ?? '')}` +
@@ -412,6 +421,50 @@ async function ordersMenu(ctx: BotContext): Promise<void> {
     );
   }
   await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb });
+}
+
+/**
+ * A friendly limit-order builder for a specific token. Instead of asking for a
+ * raw "SUI per token" price (which is meaningless for tiny-priced tokens), we
+ * anchor to the live price and offer plain-language presets: buy the dip at
+ * −X%, or take profit at +X%. "Custom" still allows an exact target.
+ */
+async function limitBuilder(ctx: BotContext, coinType: string): Promise<void> {
+  const id = await ensureWallet(ctx);
+  await ctx.services.repo.setMeta(`buytok:${id}`, coinType).catch(() => {});
+  const [info, priceNum, meta] = await Promise.all([
+    ctx.services.dex.token(coinType).catch(() => null),
+    ctx.services.oracle.priceNumber(coinType).catch(() => null),
+    ctx.services.sui.getCoinMeta(coinType),
+  ]);
+  const priceSui = info?.priceNative || priceNum || 0;
+  const sym = info?.symbol ?? meta.symbol;
+  const priceLine = priceSui > 0
+    ? `Current price: <b>${priceSui.toPrecision(4)} SUI</b>${info ? ` · $${info.priceUsd.toPrecision(4)}` : ''}`
+    : '<i>No live price yet.</i>';
+
+  const kb = new InlineKeyboard()
+    .text('📉 Buy dip −10%', 'lim:buy:10').text('−25%', 'lim:buy:25').text('−50%', 'lim:buy:50')
+    .row()
+    .text('📈 Take profit +50%', 'lim:sell:50').text('+100%', 'lim:sell:100').text('+300%', 'lim:sell:300')
+    .row()
+    .text('✏️ Custom buy price', 'lim:cust:buy').text('✏️ Custom sell price', 'lim:cust:sell')
+    .row()
+    .text('⬅️ Back', 'qb:ref');
+
+  await ctx.reply(
+    [
+      `🎯 <b>Limit order — $${esc(sym)}</b>`,
+      '',
+      priceLine,
+      '',
+      '<b>Buy the dip</b> — fires when the price falls to your target.',
+      '<b>Take profit</b> — fires when the price rises to your target.',
+      '',
+      'Pick a target below, or set a custom price:',
+    ].join('\n'),
+    { parse_mode: 'HTML', reply_markup: kb },
+  );
 }
 
 // --- Copy / sniper / watchlist ----------------------------------------------
@@ -723,7 +776,7 @@ async function onText(ctx: BotContext): Promise<void> {
     case 'order_token':
       if (!isValidCoinType(text)) throw new Error('Not a valid coin type.');
       ctx.services.sessions.update(id, { flow: 'order_price', data: { coinType: text } });
-      await ctx.reply('Enter the <b>trigger price</b> (SUI per token):', { parse_mode: 'HTML' });
+      await ctx.reply('Enter your <b>target price</b> in SUI per token — the order fires when the price reaches it:', { parse_mode: 'HTML' });
       return;
     case 'dca_token':
       if (!isValidCoinType(text)) throw new Error('Not a valid coin type.');
@@ -1101,12 +1154,56 @@ export function registerHandlers(bot: Bot<BotContext>): void {
       await ctx.answerCallbackQuery().catch(() => {});
       const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
       if (!coinType) return;
-      ctx.services.sessions.set(id, { flow: 'order_price', data: { kind: 'limit_buy', coinType } });
-      await ctx.reply('🎯 <b>Limit buy</b>\n\nEnter the <b>trigger price</b> (SUI per token) — fires when price drops to it:', { parse_mode: 'HTML' });
+      await limitBuilder(ctx, coinType);
       return;
     }
     await ctx.answerCallbackQuery(`Buying ${arg} SUI…`).catch(() => {});
     await quickBuy(ctx, arg);
+  }));
+  bot.callbackQuery(/^lim:(buy|sell):(\d+)$/, guard(async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const id = tgId(ctx);
+    const side = ctx.match![1] as 'buy' | 'sell';
+    const pct = Number(ctx.match![2]);
+    const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
+    if (!coinType) return;
+    const info = await ctx.services.dex.token(coinType).catch(() => null);
+    const priceNum = info?.priceNative || (await ctx.services.oracle.priceNumber(coinType).catch(() => null)) || 0;
+    if (priceNum <= 0) {
+      await ctx.reply('⚠️ No live price to anchor to yet. Use ✏️ Custom to set an exact target.');
+      return;
+    }
+    // Dip-buy targets a lower price; take-profit targets a higher price.
+    const factor = side === 'buy' ? 1 - pct / 100 : 1 + pct / 100;
+    const trigger = (priceNum * factor).toPrecision(6);
+    if (side === 'buy') {
+      ctx.services.sessions.set(id, { flow: 'order_size', data: { kind: 'limit_buy', coinType, triggerPrice: trigger } });
+      await ctx.reply(
+        `🎯 <b>Limit buy set at ${esc(trigger)} SUI</b> (−${pct}% from now).\n\nHow much <b>SUI</b> should I spend when it triggers?`,
+        { parse_mode: 'HTML' },
+      );
+    } else {
+      ctx.services.sessions.set(id, { flow: 'order_size', data: { kind: 'limit_sell', coinType, triggerPrice: trigger } });
+      await ctx.reply(
+        `📈 <b>Take profit set at ${esc(trigger)} SUI</b> (+${pct}% from now).\n\nWhat <b>percent</b> of your holdings should I sell (1–100)?`,
+        { parse_mode: 'HTML' },
+      );
+    }
+  }));
+  bot.callbackQuery(/^lim:cust:(buy|sell)$/, guard(async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const id = tgId(ctx);
+    const side = ctx.match![1] as 'buy' | 'sell';
+    const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
+    if (!coinType) return;
+    const kind = side === 'buy' ? 'limit_buy' : 'limit_sell';
+    ctx.services.sessions.set(id, { flow: 'order_price', data: { kind, coinType } });
+    await ctx.reply(
+      side === 'buy'
+        ? '✏️ Enter your <b>target buy price</b> in SUI per token (fires when the price falls to it):'
+        : '✏️ Enter your <b>target sell price</b> in SUI per token (fires when the price rises to it):',
+      { parse_mode: 'HTML' },
+    );
   }));
   bot.callbackQuery(/^order:(.+)$/, guard(async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
@@ -1136,7 +1233,7 @@ async function startSellOrder(ctx: BotContext, kind: 'take_profit' | 'stop_loss'
   const id = await ensureWallet(ctx);
   if (coinType && isValidCoinType(coinType)) {
     ctx.services.sessions.set(id, { flow: 'order_price', data: { kind, coinType } });
-    await ctx.reply('Enter the trigger price (SUI per token):');
+    await ctx.reply('Enter your target price in SUI per token — the order fires when the price reaches it:');
   } else {
     ctx.services.sessions.set(id, { flow: 'order_token', data: { kind } });
     await ctx.reply('Paste the token coin type:');

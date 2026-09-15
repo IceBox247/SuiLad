@@ -79,6 +79,11 @@ const RawSchema = z.object({
   BRIDGE_API_BASE_URL: z.string().url().optional().or(z.literal('')),
 
   // Security / limits
+  // Public by default. Set ENFORCE_ALLOWLIST=true to restrict to ALLOWED_TELEGRAM_IDS.
+  ENFORCE_ALLOWLIST: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
   RATE_LIMIT_PER_MIN: z.coerce.number().int().min(1).max(6000).default(30),
   MAX_BUY_SUI: z.coerce.number().min(0).default(0), // 0 = no cap
   MAX_SUBWALLETS: z.coerce.number().int().min(1).max(50).default(10),
@@ -117,6 +122,7 @@ export interface AppConfig {
   launchpadConfigId: string;
   bridgeProvider: 'mock' | 'mayan' | 'debridge';
   bridgeApiBaseUrl: string;
+  enforceAllowlist: boolean;
   rateLimitPerMin: number;
   maxBuySui: number;
   maxSubWallets: number;
@@ -166,6 +172,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     telegramBotToken: raw.TELEGRAM_BOT_TOKEN,
     allowedTelegramIds: raw.ALLOWED_TELEGRAM_IDS,
     adminTelegramIds: raw.ADMIN_TELEGRAM_IDS,
+    enforceAllowlist: raw.ENFORCE_ALLOWLIST,
     network,
     rpcUrl,
     walletEncryptionKey: raw.WALLET_ENCRYPTION_KEY,

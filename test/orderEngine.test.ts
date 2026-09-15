@@ -29,7 +29,7 @@ beforeEach(async () => {
   const provider = new MockSwapProvider({ [`${SUI_TYPE}->${USDC}`]: [72n, 100n] });
   const oracle = new PriceOracle(provider, sui);
   const referral = new ReferralService(repo, [2000, 500, 200, 200, 100]);
-  const security = new SecurityService(repo, { rateLimitPerMin: 10_000, maxBuySui: 0, allowedIds: [], adminIds: [] });
+  const security = new SecurityService(repo, { rateLimitPerMin: 10_000, maxBuySui: 0, allowedIds: [], adminIds: [], enforceAllowlist: false });
   const trade = new TradeService(provider, sui, repo, referral, { tradingFeeBps: 100, displayFeeBps: 100, feeWallet: '0x' + 'f'.repeat(64) });
   fired = [];
   engine = new OrderEngine(repo, oracle, trade, wallet, sui, security, async (_id, msg) => { fired.push(msg); });

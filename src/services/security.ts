@@ -5,6 +5,12 @@ export interface SecurityOptions {
   maxBuySui: number; // 0 = no cap
   allowedIds: string[]; // empty = open
   adminIds: string[];
+  /**
+   * Only restrict to `allowedIds` when this is true. Defaults to false so the
+   * bot is public by default — a leftover ALLOWED_TELEGRAM_IDS value can never
+   * silently lock everyone out. Set ENFORCE_ALLOWLIST=true to make it private.
+   */
+  enforceAllowlist: boolean;
 }
 
 /**
@@ -19,6 +25,7 @@ export class SecurityService {
   ) {}
 
   isAllowed(id: string): boolean {
+    if (!this.opts.enforceAllowlist) return true; // public by default
     return this.opts.allowedIds.length === 0 || this.opts.allowedIds.includes(id);
   }
 

@@ -55,6 +55,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
     maxBuySui: config.maxBuySui,
     allowedIds: config.allowedTelegramIds,
     adminIds: config.adminTelegramIds,
+    enforceAllowlist: config.enforceAllowlist,
   });
   const trade = new TradeService(swap, sui, repo, referral, {
     tradingFeeBps: config.tradingFeeBps,

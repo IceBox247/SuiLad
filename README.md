@@ -95,7 +95,8 @@ Every setting is an env var — see [`.env.example`](./.env.example). Highlights
 | `UPSTASH_REDIS_REST_URL/_TOKEN` | Storage (auto-selects Redis when present). |
 | `LAUNCHPAD_PACKAGE_ID` | Deployed bonding-curve package (see `move/launchpad`). |
 | `BRIDGE_PROVIDER` | `mayan` / `debridge` / `mock`. |
-| `ALLOWED_TELEGRAM_IDS` / `ADMIN_TELEGRAM_IDS` | Access control. |
+| `ENFORCE_ALLOWLIST` | `true` makes the bot private (default: public). |
+| `ALLOWED_TELEGRAM_IDS` / `ADMIN_TELEGRAM_IDS` | Access control (allowlist only applies when `ENFORCE_ALLOWLIST=true`). |
 | `WEBHOOK_SECRET` / `CRON_SECRET` | Required to secure the Vercel endpoints. |
 
 ### RPC note
