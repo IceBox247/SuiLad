@@ -1,9 +1,25 @@
 # 🚀 SuiPad
 
-A fast, secure **Telegram trading + launchpad bot for the Sui blockchain**. Trade
-any token, run automated strategies, launch coins on a bonding curve, bundle buys
-across many wallets, bridge across chains, and earn through a 5-level referral
-program — all from Telegram, deployable to **Vercel**.
+A fast, secure **multi-chain Telegram trading + launchpad bot**. Trade any token
+across **Sui, Solana and the EVM family** (with TON & Tron rolling out), run
+automated strategies, launch coins on a bonding curve, bundle buys across many
+wallets, bridge across chains, earn a 5-level referral **and 20% fee cashback** —
+all from Telegram, deployable to **Vercel**.
+
+### Supported chains
+
+| Chain | Trading | Router | Wallet |
+|---|---|---|---|
+| 🌊 Sui | ✅ live | Cetus aggregator | ✅ |
+| ◎ Solana | ✅ live | Jupiter | ✅ |
+| Ξ Ethereum · 🔵 Base · 🔷 Arbitrum · 🟣 Polygon · 🟡 BNB | ✅ live | LI.FI | ✅ |
+| 💎 TON | 🔜 soon (wallet + prices live) | STON.fi | ✅ |
+| 🔺 Tron | 🔜 soon (wallet + balances live) | SunSwap | ✅ |
+
+Each user gets an encrypted wallet **per chain**, created on demand. Tap the
+**🌐 Chain** button to switch. Cross-chain **bridging** (LI.FI) is live across
+the EVM chains + Solana. Run `npm run backtest` for a read-only live check of
+every chain's wallet, balance and quote paths.
 
 > ⚠️ **This bot moves real money and custodies signing keys.** Read
 > [Security](#-security) before deploying. Start on **testnet** with small amounts.
@@ -29,9 +45,10 @@ program — all from Telegram, deployable to **Vercel**.
 - **Bundle buy** — buy the same token from many sub-wallets in one click.
 - **Launchpad** — publish a coin and trade it on a **bonding curve** (pump.fun
   style), with migration to a DEX at a raise threshold.
-- **Bridge** — quote Sui ↔ Ethereum/EVM ↔ Solana via an aggregator (Mayan/deBridge).
+- **Bridge** — real cross-chain routing via **LI.FI** (EVM ↔ EVM ↔ Solana).
 - **5-level referrals** — earn 20% / 5% / 2% / 2% / 1% of the platform fee from
   your downline.
+- **Cashback** — 20% of every trading fee you pay is rebated back to you.
 
 **UX & ops**
 - Slick inline-keyboard UI + Telegram **Menu button** listing every command.
