@@ -16,7 +16,18 @@ import { logger } from '../src/logger.js';
  * `X-Telegram-Bot-Api-Secret-Token` header before processing anything.
  */
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const { bot, services } = await getApp();
+  let app;
+  try {
+    app = await getApp();
+  } catch (err) {
+    // Surface config/boot errors (e.g. missing env vars) as a readable message
+    // instead of an opaque FUNCTION_INVOCATION_FAILED.
+    logger.error('app boot failed', { error: (err as Error).message });
+    res.statusCode = 500;
+    res.end(`Bot not configured: ${(err as Error).message}`);
+    return;
+  }
+  const { bot, services } = app;
 
   const secret = services.config.webhookSecret;
   if (!secret) {

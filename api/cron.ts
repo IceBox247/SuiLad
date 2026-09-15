@@ -7,7 +7,15 @@ import { getApp } from './_app.js';
  * with CRON_SECRET (Vercel sends it as `Authorization: Bearer <CRON_SECRET>`).
  */
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const { services, runCron } = await getApp();
+  let app;
+  try {
+    app = await getApp();
+  } catch (err) {
+    res.statusCode = 500;
+    res.end(`Bot not configured: ${(err as Error).message}`);
+    return;
+  }
+  const { services, runCron } = app;
   const secret = services.config.cronSecret;
   if (secret) {
     const auth = req.headers['authorization'];

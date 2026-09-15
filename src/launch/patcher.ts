@@ -1,11 +1,21 @@
 import { bcs } from '@mysten/bcs';
-import init, {
-  deserialize,
-  serialize,
-  update_constants,
-  update_identifiers,
-} from '@mysten/move-bytecode-template';
 import { deriveIdentifiers } from './template.js';
+
+// The Move bytecode template ships a WASM module. Import it lazily so it is only
+// loaded when a coin is actually launched — never on cold start (important for
+// serverless: a missing/unbundled WASM must not crash the whole function).
+type TemplateModule = typeof import('@mysten/move-bytecode-template');
+let templateModule: Promise<TemplateModule> | null = null;
+async function loadTemplate(): Promise<TemplateModule> {
+  if (!templateModule) {
+    templateModule = (async () => {
+      const mod = await import('@mysten/move-bytecode-template');
+      await Promise.resolve(mod.default());
+      return mod;
+    })();
+  }
+  return templateModule;
+}
 
 /**
  * Defaults describing the reference coin template documented by
@@ -37,12 +47,6 @@ export interface PatchInput {
   description: string;
 }
 
-let wasmReady: Promise<void> | null = null;
-function ensureWasm(): Promise<void> {
-  if (!wasmReady) wasmReady = Promise.resolve(init()).then(() => undefined);
-  return wasmReady;
-}
-
 /**
  * Patch a compiled coin template's bytecode with new identifiers and metadata
  * constants, producing publishable module bytecode — no Move compiler required.
@@ -55,7 +59,7 @@ export async function patchCoinBytecode(
   input: PatchInput,
   defaults: TemplateDefaults = REFERENCE_TEMPLATE,
 ): Promise<Uint8Array> {
-  await ensureWasm();
+  const { deserialize, serialize, update_constants, update_identifiers } = await loadTemplate();
   const { moduleName, witness } = deriveIdentifiers(input.symbol);
 
   let bytecode = update_identifiers(templateBytes, {
