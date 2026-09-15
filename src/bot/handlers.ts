@@ -455,7 +455,15 @@ async function onText(ctx: BotContext): Promise<void> {
   const id = tgId(ctx);
   const state = ctx.services.sessions.get(id);
   const text = ctx.message?.text?.trim() ?? '';
-  if (!state || text.startsWith('/')) return;
+  if (text.startsWith('/')) return;
+  // No active flow: pasting a coin type anywhere jumps straight into a buy.
+  if (!state) {
+    if (isValidCoinType(text)) {
+      await ensureWallet(ctx);
+      await promptBuyAmount(ctx, text);
+    }
+    return;
+  }
 
   switch (state.flow) {
     case 'import_wallet': {
