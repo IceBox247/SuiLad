@@ -150,7 +150,8 @@ async function promptBuyAmount(ctx: BotContext, coinType: string): Promise<void>
     lines.push(
       `💵 Price: <b>$${info.priceUsd.toPrecision(4)}</b>  (${priceSui.toPrecision(4)} SUI)`,
       `📊 MC: <b>${formatUsd(info.mcUsd)}</b>   💧 Liq: <b>${formatUsd(info.liquidityUsd)}</b>`,
-      `📈 Vol 24h: <b>${formatUsd(info.volume24)}</b>   🏦 ${esc(info.dexId)}`,
+      `🌊 Pooled: <b>${info.pooledSui.toLocaleString('en-US', { maximumFractionDigits: 0 })} SUI</b>   🏦 ${esc(info.dexId)}`,
+      `📈 Vol 24h: <b>${formatUsd(info.volume24)}</b>   🔁 <b>${info.buys24}</b>🟢/<b>${info.sells24}</b>🔴`,
       `⏱ 1h ${formatPct(info.change1h)}  •  6h ${formatPct(info.change6h)}  •  24h ${formatPct(info.change24h)}`,
     );
   } else {
@@ -164,12 +165,18 @@ async function promptBuyAmount(ctx: BotContext, coinType: string): Promise<void>
   if (held > 0n) lines.push(`👜 You hold: <b>${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}</b>`);
   lines.push('', `💰 Your SUI: <b>${esc(formatAmount(suiBal, 9))}</b>`, '', '👇 Tap an amount to buy, or type a custom amount:');
 
+  const net = ctx.services.config.network === 'mainnet' ? 'mainnet' : ctx.services.config.network;
+  const suiscan = `https://suiscan.xyz/${net}/coin/${coinType}`;
+  const xSearch = `https://x.com/search?q=${encodeURIComponent('$' + (info?.symbol ?? meta.symbol))}`;
+
   const kb = new InlineKeyboard();
   kb.text(`🟢 ${QUICK_BUY_SUI[0]} SUI`, `qb:${QUICK_BUY_SUI[0]}`).text(`🟢 ${QUICK_BUY_SUI[1]} SUI`, `qb:${QUICK_BUY_SUI[1]}`).row();
   kb.text(`🟢 ${QUICK_BUY_SUI[2]} SUI`, `qb:${QUICK_BUY_SUI[2]}`).text(`🟢 ${QUICK_BUY_SUI[3]} SUI`, `qb:${QUICK_BUY_SUI[3]}`).row();
-  kb.text('✏️ Buy X', 'qb:x').text('🔄 Refresh', 'qb:ref').row();
-  if (info) kb.url('📊 Chart', info.url).row();
-  kb.text('⬅️ Menu', 'menu');
+  kb.text('✏️ Buy X', 'qb:x').text('🔴 Sell', 'qb:sell').row();
+  kb.text('🎯 Limit', 'qb:lim').text(`⚙️ Slippage ${ctx.services.config.defaultSlippageBps / 100}%`, 'set_slippage').row();
+  const links = kb.url('📊 Chart', info?.url ?? suiscan).url('🔎 Suiscan', suiscan).url('𝕏 Search', xSearch);
+  links.row();
+  kb.text('🔄 Refresh', 'qb:ref').text('⬅️ Menu', 'menu');
 
   await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true } });
 }
@@ -526,11 +533,25 @@ async function onText(ctx: BotContext): Promise<void> {
       ctx.services.sessions.clear(id);
       await prepareAndConfirm(ctx, SUI_TYPE, state.data.coinType!, text);
       return;
-    case 'sell_amount':
-      if (!isPositiveAmount(text)) throw new Error('Enter a positive amount.');
+    case 'sell_amount': {
+      const coinType = state.data.coinType!;
+      let humanAmount = text;
+      const pctMatch = text.match(/^(\d{1,3})\s*%$/);
+      if (pctMatch) {
+        const pct = Number(pctMatch[1]);
+        if (pct < 1 || pct > 100) throw new Error('Percent must be 1–100.');
+        const addr = (await ctx.services.wallet.getAddress(id))!;
+        const meta = await ctx.services.sui.getCoinMeta(coinType);
+        const held = await ctx.services.sui.getBalance(addr, coinType);
+        if (held <= 0n) throw new Error('You have none of this token to sell.');
+        humanAmount = fromBaseUnits((held * BigInt(pct)) / 100n, meta.decimals);
+      } else if (!isPositiveAmount(text)) {
+        throw new Error('Enter a positive amount, or a percent like 50%.');
+      }
       ctx.services.sessions.clear(id);
-      await prepareAndConfirm(ctx, state.data.coinType!, SUI_TYPE, text);
+      await prepareAndConfirm(ctx, coinType, SUI_TYPE, humanAmount);
       return;
+    }
     case 'send_recipient':
       if (!isValidSuiAddress(text)) throw new Error('Not a valid Sui address.');
       ctx.services.sessions.set(id, { flow: 'send_amount', data: { recipient: text } });
@@ -911,6 +932,23 @@ export function registerHandlers(bot: Bot<BotContext>): void {
         ctx.services.sessions.set(id, { flow: 'buy_amount', data: { coinType } });
         await ctx.reply('How much <b>SUI</b> to spend? (e.g. <code>1.5</code>)', { parse_mode: 'HTML' });
       }
+      return;
+    }
+    if (arg === 'sell') {
+      await ctx.answerCallbackQuery().catch(() => {});
+      const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
+      if (!coinType) return;
+      const meta = await ctx.services.sui.getCoinMeta(coinType);
+      ctx.services.sessions.set(id, { flow: 'sell_amount', data: { coinType } });
+      await ctx.reply(`🔴 How much <b>${esc(meta.symbol)}</b> to sell? (or a % like <code>50%</code>)`, { parse_mode: 'HTML' });
+      return;
+    }
+    if (arg === 'lim') {
+      await ctx.answerCallbackQuery().catch(() => {});
+      const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
+      if (!coinType) return;
+      ctx.services.sessions.set(id, { flow: 'order_price', data: { kind: 'limit_buy', coinType } });
+      await ctx.reply('🎯 <b>Limit buy</b>\n\nEnter the <b>trigger price</b> (SUI per token) — fires when price drops to it:', { parse_mode: 'HTML' });
       return;
     }
     await ctx.answerCallbackQuery(`Buying ${arg} SUI…`).catch(() => {});

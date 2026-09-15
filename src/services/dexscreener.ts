@@ -11,6 +11,10 @@ export interface TokenInfo {
   change1h: number;
   change6h: number;
   change24h: number;
+  /** SUI amount pooled on the quote side of the pair. */
+  pooledSui: number;
+  buys24: number;
+  sells24: number;
   dexId: string;
   url: string;
   pairAddress: string;
@@ -24,9 +28,10 @@ interface DsPair {
   baseToken: { address: string; name: string; symbol: string };
   priceUsd?: string;
   priceNative?: string;
-  liquidity?: { usd?: number };
+  liquidity?: { usd?: number; base?: number; quote?: number };
   volume?: { h24?: number };
   priceChange?: { h1?: number; h6?: number; h24?: number };
+  txns?: { h24?: { buys?: number; sells?: number } };
   fdv?: number;
   marketCap?: number;
 }
@@ -80,6 +85,9 @@ function normalize(p: DsPair): TokenInfo {
     change1h: p.priceChange?.h1 ?? 0,
     change6h: p.priceChange?.h6 ?? 0,
     change24h: p.priceChange?.h24 ?? 0,
+    pooledSui: p.liquidity?.quote ?? 0,
+    buys24: p.txns?.h24?.buys ?? 0,
+    sells24: p.txns?.h24?.sells ?? 0,
     dexId: p.dexId,
     url: p.url,
     pairAddress: p.pairAddress,
