@@ -117,11 +117,49 @@ async function showSubwallets(ctx: BotContext): Promise<void> {
 
 // --- Buy / sell -------------------------------------------------------------
 
+/**
+ * Show a token card (name, symbol, price, your holdings) and move the user to
+ * the "how much SUI" step. Called the moment a coin type is pasted.
+ */
+async function promptBuyAmount(ctx: BotContext, coinType: string): Promise<void> {
+  const id = tgId(ctx);
+  ctx.services.sessions.set(id, { flow: 'buy_amount', data: { coinType } });
+
+  const [meta, address] = await Promise.all([
+    ctx.services.sui.getCoinMeta(coinType),
+    ctx.services.wallet.getAddress(id),
+  ]);
+  const [priceNum, suiBal, held] = await Promise.all([
+    ctx.services.oracle.priceNumber(coinType).catch(() => null),
+    ctx.services.sui.getBalance(address!, SUI_TYPE).catch(() => 0n),
+    ctx.services.sui.getBalance(address!, coinType).catch(() => 0n),
+  ]);
+
+  const priceLine = priceNum && priceNum > 0
+    ? `📈 Price: <b>${priceNum.toPrecision(6)} SUI</b>`
+    : '📈 Price: <i>no route / liquidity yet</i>';
+  const heldLine = held > 0n ? `\n👜 You hold: <b>${esc(formatAmount(held, meta.decimals))} ${esc(meta.symbol)}</b>` : '';
+
+  const text = [
+    `🪙 <b>${esc(meta.name)}</b> — <b>${esc(meta.symbol)}</b>`,
+    priceLine,
+    `🔢 Decimals: ${meta.decimals}`,
+    code(coinType),
+    heldLine,
+    '',
+    `💰 Your SUI: <b>${esc(formatAmount(suiBal, 9))}</b>`,
+    '',
+    '🟢 How much <b>SUI</b> to spend? (e.g. <code>1.5</code>)',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  await ctx.reply(text, { parse_mode: 'HTML' });
+}
+
 async function startBuy(ctx: BotContext, coinType?: string): Promise<void> {
   const id = await ensureWallet(ctx);
   if (coinType && isValidCoinType(coinType)) {
-    ctx.services.sessions.set(id, { flow: 'buy_amount', data: { coinType } });
-    await ctx.reply(`🟢 Buying ${code(coinType)}\n\nHow much <b>SUI</b> to spend?`, { parse_mode: 'HTML' });
+    await promptBuyAmount(ctx, coinType);
     return;
   }
   ctx.services.sessions.set(id, { flow: 'buy_token', data: {} });
@@ -430,8 +468,7 @@ async function onText(ctx: BotContext): Promise<void> {
     }
     case 'buy_token':
       if (!isValidCoinType(text)) throw new Error('Not a valid coin type.');
-      ctx.services.sessions.set(id, { flow: 'buy_amount', data: { coinType: text } });
-      await ctx.reply('How much <b>SUI</b> to spend?', { parse_mode: 'HTML' });
+      await promptBuyAmount(ctx, text);
       return;
     case 'buy_amount':
       if (!isPositiveAmount(text)) throw new Error('Enter a positive amount, e.g. 1.5');
