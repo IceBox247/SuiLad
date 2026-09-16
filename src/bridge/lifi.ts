@@ -49,9 +49,10 @@ export class LifiBridgeProvider implements BridgeProvider {
       this.resolveToken(fromKey, req.fromToken),
       this.resolveToken(toKey, req.toToken),
     ]);
+    const fromAddress = req.fromAddress ?? req.toAddress;
     const url =
       `${LIFI}/quote?fromChain=${fromKey}&toChain=${toKey}&fromToken=${fromToken}&toToken=${toToken}` +
-      `&fromAmount=${req.amount}&fromAddress=${req.toAddress}&toAddress=${req.toAddress}`;
+      `&fromAmount=${req.amount}&fromAddress=${fromAddress}&toAddress=${req.toAddress}`;
     const res = await this.fetchImpl(url);
     if (!res.ok) throw new Error(`Bridge quote failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
     return parseLifiBridgeQuote(await res.json(), req);

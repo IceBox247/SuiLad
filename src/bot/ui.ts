@@ -116,7 +116,7 @@ export const HELP = [
   '<b>Advanced</b>',
   '/bundle — buy from many wallets at once',
   '/launch — launch a coin (bonding curve)',
-  '/bridge — bridge across chains',
+  '/bridge — bridge across chains (guided: pick from/to/token/amount)',
   '/referral — your referral link &amp; earnings',
   '/cashback — 20% of your trading fees, rebated to you',
   '',

@@ -1130,22 +1130,131 @@ async function executeLaunch(ctx: BotContext): Promise<void> {
 
 // --- Bridge -----------------------------------------------------------------
 
+// --- Bridge (guided wizard) -------------------------------------------------
+
+const BRIDGE_CHAINS: { id: ChainId; label: string }[] = [
+  { id: 'ethereum', label: 'Ξ Ethereum' }, { id: 'base', label: '🔵 Base' },
+  { id: 'arbitrum', label: '🔷 Arbitrum' }, { id: 'polygon', label: '🟣 Polygon' },
+  { id: 'bsc', label: '🟡 BNB' }, { id: 'solana', label: '◎ Solana' },
+];
+/** Common bridge tokens and their decimals. */
+const BRIDGE_TOKENS: { sym: string; dec: number }[] = [
+  { sym: 'USDC', dec: 6 }, { sym: 'USDT', dec: 6 }, { sym: 'ETH', dec: 18 },
+];
+const chainLabel = (id: string): string => BRIDGE_CHAINS.find((c) => c.id === id)?.label ?? id;
+
 async function bridgeMenu(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
-  ctx.services.sessions.set(id, { flow: 'bridge_from', data: {} });
+  ctx.services.sessions.set(id, { flow: 'bridge', data: {} });
+  const kb = new InlineKeyboard();
+  BRIDGE_CHAINS.forEach((c, i) => { if (i % 2 === 0) kb.row(); kb.text(c.label, `br:from:${c.id}`); });
+  kb.row().text('⬅️ Menu', 'menu');
+  await ctx.reply(
+    ['🌉 <b>Bridge</b> — move assets across chains', '', `Powered by <b>${esc(ctx.services.bridge.providerName)}</b> · best-price routing.`, '', '<b>Step 1 of 4</b> — send <b>from</b> which chain?'].join('\n'),
+    { parse_mode: 'HTML', reply_markup: kb },
+  );
+}
+
+async function bridgePickTo(ctx: BotContext, from: ChainId): Promise<void> {
+  const id = tgId(ctx);
+  ctx.services.sessions.update(id, { flow: 'bridge', data: { bridgeFrom: from } });
+  const kb = new InlineKeyboard();
+  BRIDGE_CHAINS.filter((c) => c.id !== from).forEach((c, i) => { if (i % 2 === 0) kb.row(); kb.text(c.label, `br:to:${c.id}`); });
+  kb.row().text('⬅️ Back', 'bridge');
+  await ctx.editMessageText(`🌉 <b>Bridge</b>\n\nFrom: <b>${esc(chainLabel(from))}</b>\n\n<b>Step 2 of 4</b> — send <b>to</b> which chain?`, { parse_mode: 'HTML', reply_markup: kb }).catch(async () => {
+    await ctx.reply(`🌉 <b>Bridge</b>\n\nFrom: <b>${esc(chainLabel(from))}</b>\n\n<b>Step 2 of 4</b> — send <b>to</b> which chain?`, { parse_mode: 'HTML', reply_markup: kb });
+  });
+}
+
+async function bridgePickToken(ctx: BotContext, to: ChainId): Promise<void> {
+  const id = tgId(ctx);
+  const st = ctx.services.sessions.get(id);
+  ctx.services.sessions.update(id, { flow: 'bridge', data: { bridgeTo: to } });
+  const kb = new InlineKeyboard();
+  BRIDGE_TOKENS.forEach((t) => kb.text(t.sym, `br:tok:${t.sym}`));
+  kb.row().text('⬅️ Back', `br:from:${st?.data.bridgeFrom}`);
+  await ctx.editMessageText(`🌉 <b>Bridge</b>\n\n${esc(chainLabel(st?.data.bridgeFrom ?? ''))} → <b>${esc(chainLabel(to))}</b>\n\n<b>Step 3 of 4</b> — which token?`, { parse_mode: 'HTML', reply_markup: kb }).catch(async () => {
+    await ctx.reply(`🌉 <b>Bridge</b>\n\n<b>Step 3 of 4</b> — which token?`, { parse_mode: 'HTML', reply_markup: kb });
+  });
+}
+
+async function bridgePickAmount(ctx: BotContext, token: string): Promise<void> {
+  const id = tgId(ctx);
+  ctx.services.sessions.update(id, { flow: 'bridge_amount', data: { bridgeToken: token } });
+  const st = ctx.services.sessions.get(id)!;
+  await ctx.editMessageText(
+    `🌉 <b>Bridge</b>\n\n${esc(chainLabel(st.data.bridgeFrom!))} → <b>${esc(chainLabel(st.data.bridgeTo!))}</b> · <b>${esc(token)}</b>\n\n<b>Step 4 of 4</b> — how much <b>${esc(token)}</b> to bridge? (type the amount)`,
+    { parse_mode: 'HTML' },
+  ).catch(async () => {
+    await ctx.reply(`🌉 <b>Bridge</b> — how much <b>${esc(token)}</b> to bridge?`, { parse_mode: 'HTML' });
+  });
+}
+
+/** Quote the bridge (destination auto-filled to the user's own wallet). */
+async function bridgeQuote(ctx: BotContext, amount: string): Promise<void> {
+  const id = tgId(ctx);
+  const st = ctx.services.sessions.get(id);
+  const from = st?.data.bridgeFrom as ChainId | undefined;
+  const to = st?.data.bridgeTo as ChainId | undefined;
+  const token = st?.data.bridgeToken;
+  if (!from || !to || !token) { await bridgeMenu(ctx); return; }
+  if (!isPositiveAmount(amount)) throw new Error('Enter a positive amount.');
+  const dec = BRIDGE_TOKENS.find((t) => t.sym === token)?.dec ?? 6;
+  const amountBase = toBaseUnits(amount, dec).toString();
+
+  await ctx.reply('⏳ Fetching the best route…');
+  const [dest, fromAddr] = await Promise.all([
+    ctx.services.multiWallet.ensureWallet(id, to),
+    ctx.services.multiWallet.ensureWallet(id, from),
+  ]);
+  const quote = await ctx.services.bridge.quote({ fromChain: from as never, toChain: to as never, fromToken: token, toToken: token, amount: amountBase, toAddress: dest, fromAddress: fromAddr });
+  const outHuman = (Number(quote.estAmountOut) / 10 ** dec).toPrecision(6);
+
+  // Stash for execution.
+  const raw = quote.raw as any;
+  ctx.services.pending.set(`${id}:bridge`, { raw, from, to, token, amount, dest, fromToken: raw?.action?.fromToken?.address, amountBase });
+  ctx.services.sessions.clear(id);
+
+  const canExec = CHAINS[from]?.family === 'evm' && Boolean(raw?.transactionRequest);
+  const kb = new InlineKeyboard();
+  if (canExec) kb.text('✅ Confirm & Bridge', 'br:confirm').row();
+  kb.text('🔁 New bridge', 'bridge').text('⬅️ Menu', 'menu');
   await ctx.reply(
     [
-      '🌉 <b>Bridge</b> — move assets across chains',
+      '🌉 <b>Bridge Quote</b>',
       '',
-      `Powered by <b>${esc(ctx.services.bridge.providerName)}</b> · best-price cross-chain routing.`,
-      'Live: <b>Ethereum · Base · Arbitrum · Polygon · BNB · Solana</b> (Sui rolling out).',
+      `Send: <b>${esc(amount)} ${esc(token)}</b> on ${esc(chainLabel(from))}`,
+      `Receive: <b>~${esc(outHuman)} ${esc(token)}</b> on ${esc(chainLabel(to))}`,
+      quote.feeUsd ? `Fee: ~$${esc(quote.feeUsd)}` : '',
+      quote.etaSeconds ? `ETA: ~${Math.round(quote.etaSeconds / 60)} min` : '',
       '',
-      'Format: <code>fromChain toChain token amount destAddress</code>',
-      'e.g. <code>polygon arbitrum USDC 25 0xYourAddress</code>',
+      `To your ${esc(chainLabel(to))} wallet:\n${code(dest)}`,
       '',
-      'Send your bridge request for a live quote:',
-    ].join('\n'),
-    { parse_mode: 'HTML' },
+      canExec ? 'Tap <b>Confirm</b> to bridge now.' : `<i>Signing on ${esc(chainLabel(from))} is rolling out — route via ${esc(quote.provider)}.</i>`,
+    ].filter(Boolean).join('\n'),
+    { parse_mode: 'HTML', reply_markup: kb },
+  );
+}
+
+/** Execute the stashed bridge quote (EVM source only). */
+async function bridgeConfirm(ctx: BotContext): Promise<void> {
+  const id = tgId(ctx);
+  const p = ctx.services.pending.get(`${id}:bridge`) as { raw: any; from: ChainId; to: ChainId; token: string; amount: string; dest: string; fromToken?: string; amountBase: string } | undefined;
+  if (!p) { await ctx.reply('That quote expired. Start a new bridge.', { reply_markup: backMenu() }); return; }
+  const adapter = ctx.services.adapters[p.from];
+  if (!adapter || CHAINS[p.from].family !== 'evm') { await ctx.reply('Signing on this source chain is rolling out.', { reply_markup: backMenu() }); return; }
+  await ctx.services.security.enforceRate(id, 'bridge');
+  ctx.services.pending.delete(`${id}:bridge`);
+  await ctx.reply(`⏳ Bridging ${esc(p.amount)} ${esc(p.token)} from ${esc(chainLabel(p.from))}…`, { parse_mode: 'HTML' });
+  const fromAddr = await ctx.services.multiWallet.ensureWallet(id, p.from);
+  const secret = await ctx.services.multiWallet.getSecret(id, p.from);
+  // Reuse the EVM swap executor: it approves (if ERC-20) then sends the LI.FI tx.
+  const req = { inputToken: p.fromToken ?? p.raw?.action?.fromToken?.address, outputToken: '', amount: p.amountBase, slippageBps: 0, owner: fromAddr };
+  const quote = { inputToken: req.inputToken, outputToken: '', inAmount: p.amountBase, outAmount: p.raw?.estimate?.toAmount ?? '0', minOut: '0', route: 'LI.FI', raw: p.raw };
+  const { digest } = await adapter.swap(secret, quote, req);
+  await ctx.reply(
+    `✅ <b>Bridge submitted!</b>\nSource tx: ${link('view', adapter.explorerTx(digest))}\nFunds arrive on <b>${esc(chainLabel(p.to))}</b> in a few minutes to:\n${code(p.dest)}`,
+    { parse_mode: 'HTML', reply_markup: mainMenu() },
   );
 }
 
@@ -1410,35 +1519,9 @@ async function onText(ctx: BotContext): Promise<void> {
       return;
     }
     // Bridge
-    case 'bridge_from': {
-      const parts = text.split(/\s+/);
-      if (parts.length < 5) throw new Error('Format: fromChain toChain token amount destAddress');
-      ctx.services.sessions.clear(id);
-      const [fromChain, toChain, token, amount, ...addr] = parts;
-      const quote = await ctx.services.bridge.quote({
-        fromChain: fromChain as never,
-        toChain: toChain as never,
-        fromToken: token!,
-        toToken: token!,
-        amount: amount!,
-        toAddress: addr.join(''),
-      });
-      await ctx.reply(
-        [
-          '🌉 <b>Bridge Quote</b>',
-          '',
-          `${esc(quote.amountIn)} ${esc(token!)} on ${esc(fromChain!)} → <b>${esc(quote.estAmountOut)} ${esc(token!)}</b> on ${esc(toChain!)}`,
-          quote.feeUsd ? `Fee: ~$${esc(quote.feeUsd)}` : '',
-          quote.etaSeconds ? `ETA: ~${Math.round(quote.etaSeconds / 60)} min` : '',
-          '',
-          `<i>Provider: ${esc(quote.provider)}. Complete the transfer via the provider to your destination address.</i>`,
-        ]
-          .filter(Boolean)
-          .join('\n'),
-        { parse_mode: 'HTML', reply_markup: mainMenu() },
-      );
+    case 'bridge_amount':
+      await bridgeQuote(ctx, text);
       return;
-    }
   }
 }
 
@@ -1570,6 +1653,10 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   cb('watchlist', watchlistMenu);
   cb('bundle', bundleMenu);
   cb('bridge', bridgeMenu);
+  bot.callbackQuery(/^br:from:(.+)$/, guard(async (ctx) => { await ctx.answerCallbackQuery().catch(() => {}); await bridgePickTo(ctx, ctx.match![1] as ChainId); }));
+  bot.callbackQuery(/^br:to:(.+)$/, guard(async (ctx) => { await ctx.answerCallbackQuery().catch(() => {}); await bridgePickToken(ctx, ctx.match![1] as ChainId); }));
+  bot.callbackQuery(/^br:tok:(.+)$/, guard(async (ctx) => { await ctx.answerCallbackQuery().catch(() => {}); await bridgePickAmount(ctx, ctx.match![1]!); }));
+  bot.callbackQuery('br:confirm', guard(async (ctx) => { await ctx.answerCallbackQuery().catch(() => {}); await bridgeConfirm(ctx); }));
   cb('launch', startLaunch);
   cb('subwallets', showSubwallets);
 

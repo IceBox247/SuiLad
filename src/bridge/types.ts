@@ -12,6 +12,8 @@ export interface BridgeQuoteRequest {
   amount: string;
   /** Recipient address on the destination chain. */
   toAddress: string;
+  /** Sender address on the source chain (so the tx is built for the signer). */
+  fromAddress?: string;
 }
 
 export interface BridgeQuote {
