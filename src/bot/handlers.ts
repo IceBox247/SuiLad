@@ -587,6 +587,37 @@ function isChainToken(ctx: BotContext, text: string, chain: ChainId): boolean {
   return a.isValidAddress(text);
 }
 
+/** Cheap pre-check: does `text` look like any supported token address at all? */
+function looksLikeToken(ctx: BotContext, text: string): boolean {
+  if (isValidCoinType(text)) return true; // Sui coin type
+  if (/^0x[0-9a-fA-F]{40}$/.test(text)) return true; // EVM
+  if (!text.startsWith('0x') && !text.includes('::') && (ctx.services.adapters.solana?.isValidAddress(text) ?? false)) return true; // Solana mint
+  return false;
+}
+
+/**
+ * Detect which supported LIVE chain a pasted token belongs to. Sui coin types
+ * are unambiguous; for everything else we ask DexScreener (which also resolves
+ * the EVM-address ambiguity, since 0x… looks identical on every EVM chain). A
+ * brand-new token not yet on DexScreener falls back to a format guess.
+ */
+async function detectChain(ctx: BotContext, text: string): Promise<ChainId | null> {
+  if (isValidCoinType(text)) return 'sui';
+  const best = await ctx.services.dex.bestChain(text).catch(() => null);
+  if (best) {
+    const c = ALL_CHAINS.find((x) => CHAINS[x].dexScreenerChain === best.chainId);
+    if (c && LIVE_CHAINS.includes(c)) return c;
+  }
+  // Fallbacks for tokens DexScreener hasn't indexed yet.
+  if (!text.startsWith('0x') && (ctx.services.adapters.solana?.isValidAddress(text) ?? false)) return 'solana';
+  if (/^0x[0-9a-fA-F]{40}$/.test(text)) {
+    // Same address exists on every EVM chain — keep the active EVM chain.
+    const active = await ctx.services.multiWallet.getActiveChain(tgId(ctx)).catch(() => 'sui' as ChainId);
+    if (CHAINS[active]?.family === 'evm') return active;
+  }
+  return null;
+}
+
 /** Gas headroom to keep in base units so a native-in buy can still pay fees. */
 function gasBuffer(meta: typeof CHAINS[ChainId]): bigint {
   if (meta.family === 'solana') return 5_000_000n; // 0.005 SOL
@@ -1266,31 +1297,38 @@ async function onText(ctx: BotContext): Promise<void> {
   const state = ctx.services.sessions.get(id);
   const text = ctx.message?.text?.trim() ?? '';
   if (text.startsWith('/')) return;
-  // On a non-Sui chain, a pasted token address shows its card (mirrors Sui).
-  if (!(state && state.flow === 'sol_buy_amount')) {
-    const active = await ctx.services.multiWallet.getActiveChain(id).catch(() => 'sui' as ChainId);
-    if (active !== 'sui' && isChainToken(ctx, text, active)) {
+  // Steps that specifically expect a Sui coin type / custom input as text.
+  const awaitingCoinType = new Set(['buy_token', 'order_token', 'dca_token', 'snipe_token', 'watch_token', 'bundle_token', 'sol_buy_amount']);
+  const inAwaitFlow = Boolean(state && awaitingCoinType.has(state.flow));
+
+  // Paste ANY token address and the bot auto-detects its chain (no need to
+  // switch chains first), switches to it, and opens the card.
+  if (!inAwaitFlow && looksLikeToken(ctx, text)) {
+    const detected = await detectChain(ctx, text);
+    if (detected === 'sui') {
       await ensureWallet(ctx);
+      const u = await ctx.services.repo.getUser(id);
+      // Auto-buy: paste a CA and it buys instantly, no card, no taps.
+      if (u?.settings.autoBuy) {
+        await ctx.services.repo.setMeta(`buytok:${id}`, text).catch(() => {});
+        ctx.services.sessions.clear(id);
+        await ctx.reply(`⚡ <b>Auto-Buy</b> — buying ${esc(u.settings.autoBuySui)} SUI…`, { parse_mode: 'HTML' });
+        await quickBuy(ctx, u.settings.autoBuySui || '1');
+        return;
+      }
+      await promptBuyAmount(ctx, text);
+      return;
+    }
+    if (detected) {
+      await ensureWallet(ctx);
+      const active = await ctx.services.multiWallet.getActiveChain(id).catch(() => 'sui' as ChainId);
+      if (detected !== active) {
+        await ctx.services.multiWallet.setActiveChain(id, detected);
+        await ctx.reply(`🌐 Switched to <b>${esc(CHAINS[detected].name)}</b> for this token.`, { parse_mode: 'HTML' }).catch(() => {});
+      }
       await chainCard(ctx, text);
       return;
     }
-  }
-  // A pasted coin type ALWAYS shows the token card — even mid-flow — except in
-  // the few steps that are specifically waiting for a coin type as input.
-  const awaitingCoinType = new Set(['buy_token', 'order_token', 'dca_token', 'snipe_token', 'watch_token', 'bundle_token']);
-  if (isValidCoinType(text) && !(state && awaitingCoinType.has(state.flow))) {
-    await ensureWallet(ctx);
-    const u = await ctx.services.repo.getUser(id);
-    // Auto-buy: paste a CA and it buys instantly, no card, no taps.
-    if (u?.settings.autoBuy) {
-      await ctx.services.repo.setMeta(`buytok:${id}`, text).catch(() => {});
-      ctx.services.sessions.clear(id);
-      await ctx.reply(`⚡ <b>Auto-Buy</b> — buying ${esc(u.settings.autoBuySui)} SUI…`, { parse_mode: 'HTML' });
-      await quickBuy(ctx, u.settings.autoBuySui || '1');
-      return;
-    }
-    await promptBuyAmount(ctx, text);
-    return;
   }
   if (!state) return;
 

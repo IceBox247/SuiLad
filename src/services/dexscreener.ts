@@ -78,6 +78,26 @@ export class DexScreener {
     this.cache.set(key, { at: now, data });
     return data;
   }
+
+  /**
+   * Detect which chain a token address lives on by picking the deepest-liquidity
+   * pair across ALL chains. Resolves the EVM-address ambiguity (the same 0x…
+   * address format exists on every EVM chain) so a pasted CA routes to the right
+   * chain automatically. Returns the DexScreener chainId, or null if unlisted.
+   */
+  async bestChain(address: string): Promise<{ chainId: string; pairAddress: string; liquidityUsd: number } | null> {
+    try {
+      const res = await this.fetchImpl(`https://api.dexscreener.com/latest/dex/tokens/${address}`, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return null;
+      const json = (await res.json()) as { pairs?: DsPair[] };
+      const best = (json.pairs ?? []).sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+      if (!best) return null;
+      return { chainId: best.chainId, pairAddress: best.pairAddress, liquidityUsd: best.liquidity?.usd ?? 0 };
+    } catch (err) {
+      logger.debug('dexscreener bestChain failed', { address, e: (err as Error).message });
+      return null;
+    }
+  }
 }
 
 function normalize(p: DsPair): TokenInfo {
