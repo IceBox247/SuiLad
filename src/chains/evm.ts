@@ -119,6 +119,10 @@ export class EvmAdapter implements ChainAdapter {
   // --- Reads ---------------------------------------------------------------
 
   async getNativeBalance(address: string): Promise<bigint> {
+    // On chains where the gas token is itself an ERC-20 stablecoin (Arc = USDC,
+    // Stable = USDT0), the spendable/base balance lives in the token contract,
+    // not eth_getBalance (which reports a differently-scaled gas balance).
+    if (this.meta.nativeErc20) return this.getTokenBalance(address, this.meta.nativeAddress);
     const client = await this.publicClient();
     return client.getBalance({ address: address as `0x${string}` });
   }

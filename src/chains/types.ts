@@ -15,7 +15,9 @@ export type ChainId =
   | 'polygon'
   | 'bsc'
   | 'tron'
-  | 'ton';
+  | 'ton'
+  | 'arc'
+  | 'stable';
 
 export interface ChainMeta {
   id: ChainId;
@@ -33,6 +35,12 @@ export interface ChainMeta {
   dexScreenerChain: string;
   /** Family — drives key scheme + address validation. */
   family: 'sui' | 'solana' | 'evm' | 'tron' | 'ton';
+  /**
+   * True when the chain's gas/base token is itself an ERC-20 stablecoin
+   * (Arc = USDC, Stable = USDT0). `nativeAddress` is then the real token
+   * address and balances are read via balanceOf, not eth_getBalance.
+   */
+  nativeErc20?: boolean;
 }
 
 export interface GeneratedWallet {

@@ -34,6 +34,15 @@ describe('EvmAdapter wallets', () => {
     expect(() => new EvmAdapter('sui' as any, 'https://rpc', 'x')).toThrow(/not an EVM chain/);
   });
 
+  it('supports stablecoin-gas chains (Arc): USDC base, 6 decimals, LI.FI id', async () => {
+    const a = new EvmAdapter('arc', 'https://rpc.drpc.mainnet.arc.io', 'https://explorer.arc.io');
+    expect(a.meta.nativeSymbol).toBe('USDC');
+    expect(a.meta.nativeDecimals).toBe(6);
+    expect(a.meta.nativeErc20).toBe(true);
+    const w = await a.createWallet();
+    expect(a.isValidAddress(w.address)).toBe(true);
+  });
+
   it('builds chain-correct explorer links', () => {
     const a = new EvmAdapter('base', 'https://rpc', 'https://basescan.org');
     expect(a.explorerTx('0xabc')).toBe('https://basescan.org/tx/0xabc');

@@ -46,6 +46,14 @@ export const CHAINS: Record<ChainId, ChainMeta> = {
     id: 'ton', name: 'TON', icon: '💎', nativeSymbol: 'TON', nativeDecimals: 9,
     nativeAddress: NATIVE.ton, dexScreenerChain: 'ton', family: 'ton',
   },
+  arc: {
+    id: 'arc', name: 'Arc', icon: '🅰️', nativeSymbol: 'USDC', nativeDecimals: 6,
+    nativeAddress: '0x3600000000000000000000000000000000000000', dexScreenerChain: 'arc', family: 'evm', nativeErc20: true,
+  },
+  stable: {
+    id: 'stable', name: 'Stable', icon: '💵', nativeSymbol: 'USDT0', nativeDecimals: 6,
+    nativeAddress: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', dexScreenerChain: 'stable', family: 'evm', nativeErc20: true,
+  },
 };
 
 export const ALL_CHAINS: ChainId[] = Object.keys(CHAINS) as ChainId[];
@@ -57,6 +65,8 @@ export const EVM_CHAIN_ID: Partial<Record<ChainId, number>> = {
   arbitrum: 42161,
   polygon: 137,
   bsc: 56,
+  arc: 5042,
+  stable: 988,
 };
 
 /** Public RPC + explorer defaults per EVM chain (override RPC via config). */
@@ -66,6 +76,8 @@ export const EVM_DEFAULTS: Partial<Record<ChainId, { rpc: string; explorer: stri
   arbitrum: { rpc: 'https://arb1.arbitrum.io/rpc', explorer: 'https://arbiscan.io', lifiChain: 'ARB' },
   polygon: { rpc: 'https://polygon-rpc.com', explorer: 'https://polygonscan.com', lifiChain: 'POL' },
   bsc: { rpc: 'https://bsc-dataseed.binance.org', explorer: 'https://bscscan.com', lifiChain: 'BSC' },
+  arc: { rpc: 'https://rpc.drpc.mainnet.arc.io', explorer: 'https://explorer.arc.io', lifiChain: 'arc' },
+  stable: { rpc: 'https://rpc.stable.xyz', explorer: 'https://stablescan.xyz', lifiChain: 'sta' },
 };
 
 export function isChainId(x: string): x is ChainId {

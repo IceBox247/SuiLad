@@ -60,6 +60,17 @@ async function main() {
     return `0.1 BNB → ${(Number(q.outAmount) / 1e18).toFixed(2)} USDT (${q.route})`;
   });
 
+  // Arc — stablecoin-gas EVM chain: wallet + LI.FI quote (USDC base).
+  await check('Arc (LI.FI)', async () => {
+    const d = EVM_DEFAULTS.arc!;
+    const a = new EvmAdapter('arc', d.rpc, d.explorer);
+    const w = await a.createWallet();
+    if (!a.isValidAddress(w.address)) throw new Error('bad address');
+    const cirBTC = '0x171A4217b86A807A64eB94757Db6849fb4bDbAA0';
+    const q = await a.quote({ inputToken: a.meta.nativeAddress, outputToken: cirBTC, amount: (10n * 10n ** 6n).toString(), slippageBps: 100, owner: w.address });
+    return `10 USDC → ${q.outAmount} cirBTC (${q.route})`;
+  });
+
   // TON — wallet + balance + metadata.
   await check('TON (STON.fi)', async () => {
     const a = new TonAdapter();

@@ -68,7 +68,7 @@ async function home(ctx: BotContext, edit = false): Promise<void> {
 
 // --- Chain selector ---------------------------------------------------------
 
-const LIVE_CHAINS: ChainId[] = ['sui', 'solana', 'ethereum', 'base', 'arbitrum', 'polygon', 'bsc'];
+const LIVE_CHAINS: ChainId[] = ['sui', 'solana', 'ethereum', 'base', 'arbitrum', 'polygon', 'bsc', 'arc'];
 
 async function showChainPicker(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
@@ -79,8 +79,8 @@ async function showChainPicker(ctx: BotContext): Promise<void> {
     '',
     `Currently trading on: <b>${esc(CHAINS[active].name)}</b>`,
     '',
-    'Live: <b>Sui · Solana · Ethereum · Base · Arbitrum · Polygon · BNB</b>.',
-    'TON &amp; Tron: wallets &amp; prices live, trading rolling out.',
+    'Live: <b>Sui · Solana · Ethereum · Base · Arbitrum · Polygon · BNB · Arc</b>.',
+    'Stable · TON · Tron: wallets &amp; balances live, trading rolling out.',
   ].join('\n');
   const kb = chainPicker(chains, active);
   if (ctx.callbackQuery?.message) {
@@ -477,6 +477,8 @@ const QUICK_PRESETS: Partial<Record<ChainId, string[]>> = {
   bsc: ['0.05', '0.1', '0.5', '1'],
   tron: ['20', '100', '500', '1000'],
   ton: ['1', '5', '25', '100'],
+  arc: ['5', '10', '25', '100'],
+  stable: ['5', '10', '25', '100'],
 };
 
 /** USD-denominated PnL lines for a non-Sui position at the given live USD price. */
@@ -520,6 +522,8 @@ function isChainToken(ctx: BotContext, text: string, chain: ChainId): boolean {
 /** Gas headroom to keep in base units so a native-in buy can still pay fees. */
 function gasBuffer(meta: typeof CHAINS[ChainId]): bigint {
   if (meta.family === 'solana') return 5_000_000n; // 0.005 SOL
+  // Stablecoin-gas chains (Arc/Stable): keep ~0.05 of the base token for two txs.
+  if (meta.nativeErc20) return 10n ** BigInt(meta.nativeDecimals) / 20n;
   return 10n ** BigInt(meta.nativeDecimals) / 500n; // ~0.2% of one native token
 }
 

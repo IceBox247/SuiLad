@@ -13,6 +13,8 @@ all from Telegram, deployable to **Vercel**.
 | 🌊 Sui | ✅ live | Cetus aggregator | ✅ |
 | ◎ Solana | ✅ live | Jupiter | ✅ |
 | Ξ Ethereum · 🔵 Base · 🔷 Arbitrum · 🟣 Polygon · 🟡 BNB | ✅ live | LI.FI | ✅ |
+| 🅰️ Arc (USDC-gas L1) | ✅ live | LI.FI | ✅ |
+| 💵 Stable (USDT0-gas L1) | 🔜 soon (wallet + balances live) | LI.FI | ✅ |
 | 💎 TON | 🔜 soon (wallet + prices live) | STON.fi | ✅ |
 | 🔺 Tron | 🔜 soon (wallet + balances live) | SunSwap | ✅ |
 
