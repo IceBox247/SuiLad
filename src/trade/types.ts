@@ -28,10 +28,28 @@ export interface QuoteRequest {
   slippageBps: number;
 }
 
+/** Platform fee to collect within the swap transaction. Always denominated in SUI. */
+export interface FeeSpec {
+  /** Fee amount in MIST. */
+  amount: bigint;
+  /** Destination address for the fee. */
+  wallet: string;
+  /**
+   * true  → take the fee from the SUI *output* (sells): the swap output coin is
+   *         split and the remainder sent to the user.
+   * false → take the fee from the SUI *input* (buys): split from gas up-front.
+   */
+  onOutput: boolean;
+}
+
 export interface BuildSwapParams {
   quote: Quote;
   signer: Ed25519Keypair;
   sender: string;
+  /** Optional platform fee collected in the same transaction. */
+  fee?: FeeSpec;
+  /** Extra gas budget in MIST for priority inclusion (MEV mitigation). */
+  priorityGasMist?: bigint;
 }
 
 /**

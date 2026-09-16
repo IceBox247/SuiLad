@@ -1,7 +1,7 @@
 {
-  "name": "suipad",
+  "name": "kros",
   "version": "0.1.0",
-  "description": "SuiPad — a Telegram bot that trades tokens and launches new coins on the Sui blockchain.",
+  "description": "Kros — a multi-chain Telegram bot that trades and launches tokens across Sui, Solana, the EVM chains, Arc and more.",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -14,19 +14,31 @@
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
-    "build:template": "tsx scripts/build-coin-template.ts"
+    "backtest": "tsx scripts/backtest-chains.ts",
+    "build:template": "tsx scripts/build-coin-template.ts",
+    "set-webhook": "tsx scripts/set-webhook.ts",
+    "e2e:testnet": "tsx scripts/e2e-testnet.ts"
   },
   "dependencies": {
     "@cetusprotocol/aggregator-sdk": "^0.11.0",
     "@mysten/bcs": "^1.6.0",
     "@mysten/move-bytecode-template": "^0.2.0",
     "@mysten/sui": "^1.45.2",
+    "@resvg/resvg-wasm": "^2.6.2",
+    "@ston-fi/sdk": "^2.7.0",
+    "@ton/core": "^0.63.1",
+    "@ton/crypto": "^3.3.0",
+    "@ton/ton": "^15.4.0",
+    "@upstash/redis": "^1.38.4",
     "bn.js": "^5.2.1",
     "dotenv": "^16.4.5",
     "grammy": "^1.46.0",
+    "tweetnacl": "^1.0.3",
+    "viem": "^2.56.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@solana/web3.js": "^1.99.0",
     "@types/bn.js": "^5.1.6",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
