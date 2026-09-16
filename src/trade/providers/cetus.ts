@@ -1,12 +1,7 @@
 import BN from 'bn.js';
-import {
-  AggregatorClient,
-  Env,
-  buildInputCoin,
-  type RouterData,
-} from '@cetusprotocol/aggregator-sdk';
 import { Transaction } from '@mysten/sui/transactions';
 import type { SuiClient } from '@mysten/sui/client';
+import type { RouterData } from '@cetusprotocol/aggregator-sdk';
 import type { BuildSwapParams, Quote, QuoteRequest, SwapProvider } from '../types.js';
 import { applySlippage } from '../quote.js';
 import { SUI_TYPE } from '../../sui/service.js';
@@ -15,32 +10,40 @@ import { SUI_TYPE } from '../../sui/service.js';
  * Live routing via the Cetus DEX Aggregator (splits orders across Cetus,
  * Aftermath, Bluefin, DeepBook, Turbos, FlowX, Kriya, …). Mainnet only for real
  * routing; use the mock provider on other networks.
+ *
+ * The heavy @cetusprotocol/aggregator-sdk is imported lazily (only when a Sui
+ * quote/swap actually runs) so it never inflates serverless cold starts for
+ * users trading on other chains.
  */
 export class CetusAggregatorProvider implements SwapProvider {
   readonly name = 'cetus';
-  private readonly env: Env;
+  private sdk?: typeof import('@cetusprotocol/aggregator-sdk');
 
   constructor(
     private readonly suiClient: SuiClient,
-    network: string,
+    private readonly network: string,
     private readonly endpoint?: string,
     private readonly partner?: string,
-  ) {
-    this.env = network === 'testnet' ? Env.Testnet : Env.Mainnet;
+  ) {}
+
+  private async loadSdk(): Promise<typeof import('@cetusprotocol/aggregator-sdk')> {
+    if (!this.sdk) this.sdk = await import('@cetusprotocol/aggregator-sdk');
+    return this.sdk;
   }
 
-  private newClient(signer?: string): AggregatorClient {
+  private async newClient(signer?: string) {
+    const { AggregatorClient, Env } = await this.loadSdk();
     return new AggregatorClient({
       client: this.suiClient,
       signer,
-      env: this.env,
+      env: this.network === 'testnet' ? Env.Testnet : Env.Mainnet,
       ...(this.endpoint ? { endpoint: this.endpoint } : {}),
       ...(this.partner ? { partner: this.partner } : {}),
     });
   }
 
   async quote(req: QuoteRequest): Promise<Quote> {
-    const client = this.newClient();
+    const client = await this.newClient();
     const routerData = await client.findRouters({
       from: req.inputType,
       target: req.outputType,
@@ -68,7 +71,8 @@ export class CetusAggregatorProvider implements SwapProvider {
     const { quote, sender, fee } = params;
     const routerData = quote.raw as RouterData | undefined;
     if (!routerData) throw new Error('Missing route data; re-quote before executing.');
-    const client = this.newClient(sender);
+    const { buildInputCoin } = await this.loadSdk();
+    const client = await this.newClient(sender);
     const tx = new Transaction();
     tx.setSender(sender);
     const slippage = quote.slippageBps / 10_000;
