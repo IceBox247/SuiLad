@@ -54,6 +54,10 @@ export const CHAINS: Record<ChainId, ChainMeta> = {
     id: 'stable', name: 'Stable', icon: '💵', nativeSymbol: 'USDT0', nativeDecimals: 6,
     nativeAddress: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', dexScreenerChain: 'stable', family: 'evm', nativeErc20: true,
   },
+  robinhood: {
+    id: 'robinhood', name: 'Robinhood', icon: '🪶', nativeSymbol: 'ETH', nativeDecimals: 18,
+    nativeAddress: NATIVE.evm, dexScreenerChain: 'robinhood', family: 'evm',
+  },
 };
 
 export const ALL_CHAINS: ChainId[] = Object.keys(CHAINS) as ChainId[];
@@ -67,6 +71,7 @@ export const EVM_CHAIN_ID: Partial<Record<ChainId, number>> = {
   bsc: 56,
   arc: 5042,
   stable: 988,
+  robinhood: 4663,
 };
 
 /** Public RPC + explorer defaults per EVM chain (override RPC via config). */
@@ -78,6 +83,7 @@ export const EVM_DEFAULTS: Partial<Record<ChainId, { rpc: string; explorer: stri
   bsc: { rpc: 'https://bsc-dataseed.binance.org', explorer: 'https://bscscan.com', lifiChain: 'BSC' },
   arc: { rpc: 'https://rpc.drpc.mainnet.arc.io', explorer: 'https://explorer.arc.io', lifiChain: 'arc' },
   stable: { rpc: 'https://rpc.stable.xyz', explorer: 'https://stablescan.xyz', lifiChain: 'sta' },
+  robinhood: { rpc: 'https://rpc.mainnet.chain.robinhood.com', explorer: 'https://robin.etherscan.io', lifiChain: 'out' },
 };
 
 export function isChainId(x: string): x is ChainId {

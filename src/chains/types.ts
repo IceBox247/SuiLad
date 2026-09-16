@@ -17,7 +17,8 @@ export type ChainId =
   | 'tron'
   | 'ton'
   | 'arc'
-  | 'stable';
+  | 'stable'
+  | 'robinhood';
 
 export interface ChainMeta {
   id: ChainId;

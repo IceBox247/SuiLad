@@ -33,6 +33,19 @@ async function ensureWallet(ctx: BotContext): Promise<string> {
   return id;
 }
 
+/**
+ * Convert a MIST amount (SUI base units, 9 dp) into a USD display string.
+ * Fees/referral/cashback accrue in MIST; Kros is multi-chain, so users expect
+ * to see their earnings in USD. Falls back to the raw SUI amount if the live
+ * SUI price is unavailable.
+ */
+async function mistToUsd(ctx: BotContext, mist: bigint): Promise<string> {
+  const sui = Number(formatAmount(mist, 9));
+  const price = await ctx.services.dex.token(SUI_TYPE, 'sui').then((t) => t?.priceUsd ?? 0).catch(() => 0);
+  if (!price) return `${sui.toFixed(4)} SUI`;
+  return formatUsd(sui * price);
+}
+
 async function home(ctx: BotContext, edit = false): Promise<void> {
   const id = await ensureWallet(ctx);
   const chain = await ctx.services.multiWallet.getActiveChain(id);
@@ -69,7 +82,7 @@ async function home(ctx: BotContext, edit = false): Promise<void> {
 
 // --- Chain selector ---------------------------------------------------------
 
-const LIVE_CHAINS: ChainId[] = ['sui', 'solana', 'ethereum', 'base', 'arbitrum', 'polygon', 'bsc', 'arc'];
+const LIVE_CHAINS: ChainId[] = ['sui', 'solana', 'ethereum', 'base', 'arbitrum', 'polygon', 'bsc', 'arc', 'robinhood'];
 
 async function showChainPicker(ctx: BotContext): Promise<void> {
   const id = await ensureWallet(ctx);
@@ -80,7 +93,7 @@ async function showChainPicker(ctx: BotContext): Promise<void> {
     '',
     `Currently trading on: <b>${esc(CHAINS[active].name)}</b>`,
     '',
-    'Live: <b>Sui · Solana · Ethereum · Base · Arbitrum · Polygon · BNB · Arc</b>.',
+    'Live: <b>Sui · Solana · Ethereum · Base · Arbitrum · Polygon · BNB · Arc · Robinhood</b>.',
     'Stable · TON · Tron: wallets &amp; balances live, trading rolling out.',
   ].join('\n');
   const kb = chainPicker(chains, active);
@@ -225,14 +238,18 @@ async function showReferral(ctx: BotContext): Promise<void> {
   const botUser = ctx.me?.username ?? 'YourBot';
   const url = `https://t.me/${botUser}?start=${summary?.code ?? ''}`;
   const levels = ctx.services.config.referralLevelBps.map((b) => `${b / 100}%`).join(' / ');
+  const [unclaimedUsd, lifetimeUsd] = await Promise.all([
+    mistToUsd(ctx, summary?.unclaimedMist ?? 0n),
+    mistToUsd(ctx, summary?.totalEarnedMist ?? 0n),
+  ]);
   await ctx.reply(
     [
       '🎁 <b>Referrals</b>',
       '',
       `Your link:\n${code(url)}`,
       '',
-      `Unclaimed: <b>${formatAmount(summary?.unclaimedMist ?? 0n, 9)} SUI</b>`,
-      `Lifetime: <b>${formatAmount(summary?.totalEarnedMist ?? 0n, 9)} SUI</b>`,
+      `Unclaimed: <b>${unclaimedUsd}</b>`,
+      `Lifetime: <b>${lifetimeUsd}</b>`,
       `Downline: ${summary?.levelCounts.join(' / ') ?? '0'} (L1–L5)`,
       '',
       `You earn ${levels} of the platform fee across 5 levels.`,
@@ -246,6 +263,10 @@ async function showCashback(ctx: BotContext): Promise<void> {
   const s = await ctx.services.cashback.summary(id);
   const minClaim = ctx.services.config.minReferralClaimSui;
   const canClaim = ctx.services.payout && Number(formatAmount(s.unclaimedMist, 9)) >= minClaim;
+  const [unclaimedUsd, lifetimeUsd] = await Promise.all([
+    mistToUsd(ctx, s.unclaimedMist),
+    mistToUsd(ctx, s.totalMist),
+  ]);
   const kb = new InlineKeyboard();
   if (ctx.services.payout) kb.text('💸 Claim', 'cashback_claim').row();
   kb.text('⬅️ Back', 'menu');
@@ -255,8 +276,8 @@ async function showCashback(ctx: BotContext): Promise<void> {
       '',
       `You get <b>${s.rateBps / 100}% of every trading fee</b> you pay back as cashback — automatically, on every trade.`,
       '',
-      `Unclaimed: <b>${formatAmount(s.unclaimedMist, 9)} SUI</b>`,
-      `Lifetime: <b>${formatAmount(s.totalMist, 9)} SUI</b>`,
+      `Unclaimed: <b>${unclaimedUsd}</b>`,
+      `Lifetime: <b>${lifetimeUsd}</b>`,
       '',
       ctx.services.payout
         ? canClaim
@@ -1168,6 +1189,7 @@ const BRIDGE_CHAINS: { id: ChainId; label: string }[] = [
   { id: 'arbitrum', label: '🔷 Arbitrum' }, { id: 'polygon', label: '🟣 Polygon' },
   { id: 'bsc', label: '🟡 BNB' }, { id: 'solana', label: '◎ Solana' },
   { id: 'arc', label: '🅰️ Arc' }, { id: 'stable', label: '💵 Stable' },
+  { id: 'robinhood', label: '🪶 Robinhood' },
 ];
 /** Common bridge tokens and their decimals. */
 const BRIDGE_TOKENS: { sym: string; dec: number }[] = [

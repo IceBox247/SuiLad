@@ -14,6 +14,7 @@ const LIFI_CHAIN: Partial<Record<Chain, string>> = {
   solana: 'SOL',
   arc: 'arc',
   stable: 'sta',
+  robinhood: 'out',
 };
 
 /**
