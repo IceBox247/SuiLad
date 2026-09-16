@@ -84,7 +84,7 @@ export function addrLabel(address: string): string {
 
 export function homeText(address: string, suiBalance: string): string {
   return [
-    '🚀 <b>SuiPad</b> — multi-chain trading &amp; launchpad',
+    '🚀 <b>Kros</b> — multi-chain trading &amp; launchpad',
     '🌊 Trading on <b>Sui</b> · tap 🌐 to switch chains (Solana live)',
     '',
     `💼 Wallet: ${code(address)}`,
@@ -95,7 +95,7 @@ export function homeText(address: string, suiBalance: string): string {
 }
 
 export const HELP = [
-  '<b>SuiPad — Commands</b>',
+  '<b>Kros — Commands</b>',
   '',
   '🌐 <b>Multi-chain</b>: trade on Sui &amp; Solana (more chains rolling out). Tap 🌐 <b>Chain</b> on the menu to switch; each chain has its own wallet.',
   '',

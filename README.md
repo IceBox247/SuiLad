@@ -1,4 +1,4 @@
-# 🚀 SuiPad
+# 🚀 Kros
 
 A fast, secure **multi-chain Telegram trading + launchpad bot**. Trade any token
 across **Sui, Solana and the EVM family** (with TON & Tron rolling out), run

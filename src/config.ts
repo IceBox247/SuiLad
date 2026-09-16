@@ -68,7 +68,7 @@ const RawSchema = z.object({
   UPSTASH_REDIS_REST_TOKEN: z.string().optional().or(z.literal('')),
   KV_REST_API_URL: z.string().url().optional().or(z.literal('')),
   KV_REST_API_TOKEN: z.string().optional().or(z.literal('')),
-  DATA_FILE: z.string().default('./data/suipad.json'),
+  DATA_FILE: z.string().default('./data/kros.json'),
 
   // Launch / launchpad
   SUI_CLI_PATH: z.string().optional().or(z.literal('')),

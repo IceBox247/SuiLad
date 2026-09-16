@@ -65,8 +65,13 @@ export const BOT_COMMANDS = [
   { command: 'help', description: 'Show help' },
 ];
 
-/** Register commands and enable the Menu button (shows the command list). */
+/** Register commands, the Menu button, and the bot's profile branding. */
 export async function configureBotUI(bot: Bot<BotContext>): Promise<void> {
   await bot.api.setMyCommands(BOT_COMMANDS);
   await bot.api.setChatMenuButton({ menu_button: { type: 'commands' } }).catch(() => {});
+  // Self-brand the bot profile (safe to re-run; Telegram ignores no-op updates).
+  await bot.api.setMyShortDescription('Kros — multi-chain trading & launchpad bot.').catch(() => {});
+  await bot.api
+    .setMyDescription('Kros — trade & launch tokens across Sui, Solana, the EVM chains, Arc and more. Fast, secure, non-custodial. Tap Start to create your wallet.')
+    .catch(() => {});
 }

@@ -1,7 +1,7 @@
 {
-  "name": "suipad",
+  "name": "kros",
   "version": "0.1.0",
-  "description": "SuiPad — a Telegram bot that trades tokens and launches new coins on the Sui blockchain.",
+  "description": "Kros — a multi-chain Telegram bot that trades and launches tokens across Sui, Solana, the EVM chains, Arc and more.",
   "type": "module",
   "engines": {
     "node": ">=20"

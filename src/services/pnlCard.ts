@@ -89,7 +89,7 @@ function buildSvg(d: PnlCardData): string {
   }
 
   const ref = d.referralCode ? esc(d.referralCode) : '';
-  const bot = d.botUsername ? '@' + esc(d.botUsername) : '@SuiPad';
+  const bot = d.botUsername ? '@' + esc(d.botUsername) : '@Kros';
 
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -109,7 +109,7 @@ function buildSvg(d: PnlCardData): string {
   <circle cx="1090" cy="96" r="52" fill="none" stroke="${accent}" stroke-opacity="0.5" stroke-width="3"/>
   <text x="1090" y="112" font-family="DejaVu Sans" font-size="46" fill="${accent}" text-anchor="middle">$</text>
 
-  <text x="64" y="118" font-family="DejaVu Sans" font-size="40" fill="#e8eefc">SuiPad</text>
+  <text x="64" y="118" font-family="DejaVu Sans" font-size="40" fill="#e8eefc">Kros</text>
   <text x="64" y="162" font-family="DejaVu Sans" font-size="26" fill="#7f93b8">${esc(d.chainLabel)} · ${esc(d.side)}</text>
 
   <text x="64" y="248" font-family="DejaVu Sans" font-size="46" fill="#c7d4ee">$${esc(d.symbol)}</text>

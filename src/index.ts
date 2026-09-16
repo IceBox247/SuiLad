@@ -10,7 +10,7 @@ import { configureBotUI } from './bot/bot.js';
 async function main(): Promise<void> {
   const config = loadConfig();
   setLogLevel(config.logLevel);
-  logger.info('Starting SuiPad', { network: config.network, swapProvider: config.swapProvider, storage: config.storageBackend });
+  logger.info('Starting Kros', { network: config.network, swapProvider: config.swapProvider, storage: config.storageBackend });
 
   const { bot, runCron } = await buildApp(config);
   await configureBotUI(bot);
@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
 
-  logger.info('SuiPad is live (long-polling).');
+  logger.info('Kros is live (long-polling).');
   await bot.start({ onStart: (info) => logger.info('Bot started', { username: info.username }) });
 }
 

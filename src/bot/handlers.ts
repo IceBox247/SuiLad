@@ -48,7 +48,7 @@ async function home(ctx: BotContext, edit = false): Promise<void> {
     const address = await ctx.services.multiWallet.ensureWallet(id, chain);
     const bal = await adapter.getNativeBalance(address).catch(() => 0n);
     text = [
-      `${meta.icon} <b>SuiPad</b> — trading on <b>${esc(meta.name)}</b>`,
+      `${meta.icon} <b>Kros</b> — trading on <b>${esc(meta.name)}</b>`,
       '',
       `💼 Wallet: ${code(address)}`,
       `💰 Balance: <b>${esc(formatAmount(bal, meta.nativeDecimals))} ${esc(meta.nativeSymbol)}</b>`,
@@ -566,7 +566,7 @@ async function sharePnl(ctx: BotContext): Promise<void> {
   }
   const sign = card.returnPct >= 0 ? '+' : '';
   await ctx.replyWithPhoto(new InputFile(png, 'pnl.png'), {
-    caption: `${card.returnPct >= 0 ? '🟢' : '🔴'} <b>$${esc(card.symbol)}</b> ${sign}${card.returnPct.toFixed(2)}% on ${esc(card.chainLabel)}\nTrade on ${botUsername ? '@' + esc(botUsername) : 'SuiPad'}`,
+    caption: `${card.returnPct >= 0 ? '🟢' : '🔴'} <b>$${esc(card.symbol)}</b> ${sign}${card.returnPct.toFixed(2)}% on ${esc(card.chainLabel)}\nTrade on ${botUsername ? '@' + esc(botUsername) : 'Kros'}`,
     parse_mode: 'HTML',
   });
 }
