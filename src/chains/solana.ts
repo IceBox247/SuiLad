@@ -284,6 +284,19 @@ export class SolanaAdapter implements ChainAdapter {
     throw new Error(friendlySolanaError(lastErr?.message ?? 'swap failed'));
   }
 
+  /**
+   * Sign and broadcast a pre-built base64 Solana transaction (e.g. a LI.FI
+   * bridge transactionRequest). The user is the sole required signer; any
+   * pre-applied signatures from the route builder are preserved.
+   */
+  async sendSerialized(txBase64: string, secret: string): Promise<string> {
+    const sk = decodeSecret(secret);
+    const signed = signTransaction(txBase64, sk);
+    const sig = await this.rpc<string>('sendTransaction', [signed, { encoding: 'base64', skipPreflight: false, maxRetries: 3 }]);
+    await this.confirm(sig).catch(() => {});
+    return sig;
+  }
+
   /** Poll signature status until confirmed (best-effort, bounded). */
   private async confirm(sig: string, timeoutMs = 30_000): Promise<void> {
     const until = Date.now() + timeoutMs;

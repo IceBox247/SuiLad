@@ -13,6 +13,7 @@ import { formatUsd, formatPct } from '../services/dexscreener.js';
 import type { PreparedQuote } from '../trade/tradeService.js';
 import type { LaunchParams } from '../launch/types.js';
 import { PriceOracle } from '../trade/priceOracle.js';
+import type { SolanaAdapter } from '../chains/solana.js';
 
 const tgId = (ctx: BotContext): string => String(ctx.from?.id ?? '');
 
@@ -1191,10 +1192,33 @@ const BRIDGE_CHAINS: { id: ChainId; label: string }[] = [
   { id: 'arc', label: '🅰️ Arc' }, { id: 'stable', label: '💵 Stable' },
   { id: 'robinhood', label: '🪶 Robinhood' },
 ];
-/** Common bridge tokens and their decimals. */
-const BRIDGE_TOKENS: { sym: string; dec: number }[] = [
-  { sym: 'USDC', dec: 6 }, { sym: 'USDT', dec: 6 }, { sym: 'ETH', dec: 18 },
-];
+/**
+ * Tokens you can send FROM a given source chain — the chain's own native coin
+ * first (so SOL, ETH, BNB… are pickable, not just stablecoins), then the
+ * common stablecoins. Decimals matter: SOL is 9, ETH 18, USDC/USDT 6.
+ */
+function bridgeTokensFor(from: ChainId): { sym: string; dec: number }[] {
+  const m = CHAINS[from];
+  const list: { sym: string; dec: number }[] = [{ sym: m.nativeSymbol, dec: m.nativeDecimals }];
+  const add = (sym: string, dec: number) => { if (!list.some((t) => t.sym === sym)) list.push({ sym, dec }); };
+  add('USDC', 6);
+  add('USDT', 6);
+  if (m.family === 'evm') add('ETH', 18);
+  return list;
+}
+
+/**
+ * Pick the token to RECEIVE on the destination chain. Stablecoins and ETH
+ * (across EVM) keep their symbol; a chain-specific native coin (SOL, POL,
+ * BNB…) has no counterpart elsewhere, so the bridge settles it into USDC on
+ * the destination — the most universally supported asset.
+ */
+function bridgeDestToken(sendSym: string, to: ChainId): { sym: string; dec: number } {
+  if (sendSym === 'USDC' || sendSym === 'USDT') return { sym: sendSym, dec: 6 };
+  if (sendSym === 'ETH' && CHAINS[to].family === 'evm') return { sym: 'ETH', dec: 18 };
+  return { sym: 'USDC', dec: 6 };
+}
+
 const chainLabel = (id: string): string => BRIDGE_CHAINS.find((c) => c.id === id)?.label ?? id;
 
 async function bridgeMenu(ctx: BotContext): Promise<void> {
@@ -1224,8 +1248,9 @@ async function bridgePickToken(ctx: BotContext, to: ChainId): Promise<void> {
   const id = tgId(ctx);
   const st = ctx.services.sessions.get(id);
   ctx.services.sessions.update(id, { flow: 'bridge', data: { bridgeTo: to } });
+  const from = (st?.data.bridgeFrom ?? 'ethereum') as ChainId;
   const kb = new InlineKeyboard();
-  BRIDGE_TOKENS.forEach((t) => kb.text(t.sym, `br:tok:${t.sym}`));
+  bridgeTokensFor(from).forEach((t) => kb.text(t.sym, `br:tok:${t.sym}`));
   kb.row().text('⬅️ Back', `br:from:${st?.data.bridgeFrom}`);
   await ctx.editMessageText(`🌉 <b>Bridge</b>\n\n${esc(chainLabel(st?.data.bridgeFrom ?? ''))} → <b>${esc(chainLabel(to))}</b>\n\n<b>Step 3 of 4</b> — which token?`, { parse_mode: 'HTML', reply_markup: kb }).catch(async () => {
     await ctx.reply(`🌉 <b>Bridge</b>\n\n<b>Step 3 of 4</b> — which token?`, { parse_mode: 'HTML', reply_markup: kb });
@@ -1253,23 +1278,25 @@ async function bridgeQuote(ctx: BotContext, amount: string): Promise<void> {
   const token = st?.data.bridgeToken;
   if (!from || !to || !token) { await bridgeMenu(ctx); return; }
   if (!isPositiveAmount(amount)) throw new Error('Enter a positive amount.');
-  const dec = BRIDGE_TOKENS.find((t) => t.sym === token)?.dec ?? 6;
-  const amountBase = toBaseUnits(amount, dec).toString();
+  const srcDec = bridgeTokensFor(from).find((t) => t.sym === token)?.dec ?? 6;
+  const recv = bridgeDestToken(token, to);
+  const amountBase = toBaseUnits(amount, srcDec).toString();
 
   await ctx.reply('⏳ Fetching the best route…');
   const [dest, fromAddr] = await Promise.all([
     ctx.services.multiWallet.ensureWallet(id, to),
     ctx.services.multiWallet.ensureWallet(id, from),
   ]);
-  const quote = await ctx.services.bridge.quote({ fromChain: from as never, toChain: to as never, fromToken: token, toToken: token, amount: amountBase, toAddress: dest, fromAddress: fromAddr });
-  const outHuman = (Number(quote.estAmountOut) / 10 ** dec).toPrecision(6);
+  const quote = await ctx.services.bridge.quote({ fromChain: from as never, toChain: to as never, fromToken: token, toToken: recv.sym, amount: amountBase, toAddress: dest, fromAddress: fromAddr });
+  const outHuman = (Number(quote.estAmountOut) / 10 ** recv.dec).toPrecision(6);
 
   // Stash for execution.
   const raw = quote.raw as any;
   ctx.services.pending.set(`${id}:bridge`, { raw, from, to, token, amount, dest, fromToken: raw?.action?.fromToken?.address, amountBase });
   ctx.services.sessions.clear(id);
 
-  const canExec = CHAINS[from]?.family === 'evm' && Boolean(raw?.transactionRequest);
+  const fam = CHAINS[from]?.family;
+  const canExec = (fam === 'evm' && Boolean(raw?.transactionRequest)) || (fam === 'solana' && Boolean(raw?.transactionRequest?.data));
   const kb = new InlineKeyboard();
   if (canExec) kb.text('✅ Confirm & Bridge', 'br:confirm').row();
   kb.text('🔁 New bridge', 'bridge').text('⬅️ Menu', 'menu');
@@ -1278,7 +1305,7 @@ async function bridgeQuote(ctx: BotContext, amount: string): Promise<void> {
       '🌉 <b>Bridge Quote</b>',
       '',
       `Send: <b>${esc(amount)} ${esc(token)}</b> on ${esc(chainLabel(from))}`,
-      `Receive: <b>~${esc(outHuman)} ${esc(token)}</b> on ${esc(chainLabel(to))}`,
+      `Receive: <b>~${esc(outHuman)} ${esc(recv.sym)}</b> on ${esc(chainLabel(to))}`,
       quote.feeUsd ? `Fee: ~$${esc(quote.feeUsd)}` : '',
       quote.etaSeconds ? `ETA: ~${Math.round(quote.etaSeconds / 60)} min` : '',
       '',
@@ -1296,16 +1323,26 @@ async function bridgeConfirm(ctx: BotContext): Promise<void> {
   const p = ctx.services.pending.get(`${id}:bridge`) as { raw: any; from: ChainId; to: ChainId; token: string; amount: string; dest: string; fromToken?: string; amountBase: string } | undefined;
   if (!p) { await ctx.reply('That quote expired. Start a new bridge.', { reply_markup: backMenu() }); return; }
   const adapter = ctx.services.adapters[p.from];
-  if (!adapter || CHAINS[p.from].family !== 'evm') { await ctx.reply('Signing on this source chain is rolling out.', { reply_markup: backMenu() }); return; }
+  const fam = CHAINS[p.from]?.family;
+  if (!adapter || (fam !== 'evm' && fam !== 'solana')) { await ctx.reply('Signing on this source chain is rolling out.', { reply_markup: backMenu() }); return; }
   await ctx.services.security.enforceRate(id, 'bridge');
   ctx.services.pending.delete(`${id}:bridge`);
   await ctx.reply(`⏳ Bridging ${esc(p.amount)} ${esc(p.token)} from ${esc(chainLabel(p.from))}…`, { parse_mode: 'HTML' });
-  const fromAddr = await ctx.services.multiWallet.ensureWallet(id, p.from);
   const secret = await ctx.services.multiWallet.getSecret(id, p.from);
-  // Reuse the EVM swap executor: it approves (if ERC-20) then sends the LI.FI tx.
-  const req = { inputToken: p.fromToken ?? p.raw?.action?.fromToken?.address, outputToken: '', amount: p.amountBase, slippageBps: 0, owner: fromAddr };
-  const quote = { inputToken: req.inputToken, outputToken: '', inAmount: p.amountBase, outAmount: p.raw?.estimate?.toAmount ?? '0', minOut: '0', route: 'LI.FI', raw: p.raw };
-  const { digest } = await adapter.swap(secret, quote, req);
+
+  let digest: string;
+  if (fam === 'solana') {
+    // LI.FI hands back a fully-built Solana transaction; the user signs & sends it.
+    const data = p.raw?.transactionRequest?.data as string | undefined;
+    if (!data) { await ctx.reply('That route can’t be signed automatically yet. Try a different token/route.', { reply_markup: backMenu() }); return; }
+    digest = await (ctx.services.adapters.solana as SolanaAdapter).sendSerialized(data, secret);
+  } else {
+    const fromAddr = await ctx.services.multiWallet.ensureWallet(id, p.from);
+    // Reuse the EVM swap executor: it approves (if ERC-20) then sends the LI.FI tx.
+    const req = { inputToken: p.fromToken ?? p.raw?.action?.fromToken?.address, outputToken: '', amount: p.amountBase, slippageBps: 0, owner: fromAddr };
+    const quote = { inputToken: req.inputToken, outputToken: '', inAmount: p.amountBase, outAmount: p.raw?.estimate?.toAmount ?? '0', minOut: '0', route: 'LI.FI', raw: p.raw };
+    ({ digest } = await adapter.swap(secret, quote, req));
+  }
   await ctx.reply(
     `✅ <b>Bridge submitted!</b>\nSource tx: ${link('view', adapter.explorerTx(digest))}\nFunds arrive on <b>${esc(chainLabel(p.to))}</b> in a few minutes to:\n${code(p.dest)}`,
     { parse_mode: 'HTML', reply_markup: mainMenu() },
