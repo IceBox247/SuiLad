@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { SolanaAdapter, buildSwapBody, parseJupiterQuote, signTransaction, decodeSecret } from '../src/chains/solana.js';
+import { SolanaAdapter, buildSwapBody, parseJupiterQuote, signTransaction, decodeSecret, friendlySolanaError } from '../src/chains/solana.js';
 import type { SwapRequest } from '../src/chains/types.js';
 
 const SOL = 'So11111111111111111111111111111111111111112';
@@ -44,6 +44,19 @@ describe('Jupiter quote parsing', () => {
     expect(q.minOut).toBe('9999042');
     expect(q.route).toContain('HumidiFi');
     expect(q.raw).toBe(json);
+  });
+});
+
+describe('friendlySolanaError', () => {
+  it('maps slippage errors to a raise-slippage hint', () => {
+    expect(friendlySolanaError('custom program error: 0x1771')).toMatch(/slippage/i);
+    expect(friendlySolanaError('Program log: Error: SlippageToleranceExceeded')).toMatch(/slippage/i);
+  });
+  it('maps a generic simulation failure to a slippage hint', () => {
+    expect(friendlySolanaError('Transaction simulation failed')).toMatch(/slippage/i);
+  });
+  it('maps blockhash errors to a retry hint', () => {
+    expect(friendlySolanaError('Blockhash not found')).toMatch(/try again/i);
   });
 });
 

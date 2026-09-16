@@ -116,6 +116,24 @@ export function signTransaction(txBase64: string, secretKey: Uint8Array): string
   return Buffer.from(out).toString('base64');
 }
 
+/** Turn a raw Solana/Jupiter error into an actionable message for the user. */
+export function friendlySolanaError(raw: string): string {
+  const s = raw.toLowerCase();
+  if (s.includes('0x1771') || s.includes('slippage') || s.includes('slippagetoleranceexceeded')) {
+    return 'Swap failed — price moved past your slippage. Raise slippage in ⚙️ Settings (try 5–15% for volatile tokens) and retry.';
+  }
+  if (s.includes('insufficient') || s.includes('0x1') && s.includes('lamports')) {
+    return 'Swap failed — not enough SOL to cover the trade + network fee. Top up a little SOL and retry.';
+  }
+  if (s.includes('blockhash') || s.includes('block height exceeded')) {
+    return 'Network was busy and the transaction expired. Please try again.';
+  }
+  if (s.includes('simulation failed')) {
+    return `Swap failed on-chain (simulation). This is usually slippage too low for a volatile token — raise it in ⚙️ Settings and retry. (${raw.slice(0, 160)})`;
+  }
+  return `Swap failed: ${raw.slice(0, 200)}`;
+}
+
 function equal(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -144,8 +162,13 @@ export class SolanaAdapter implements ChainAdapter {
       signal: AbortSignal.timeout(12_000),
     });
     if (!res.ok) throw new Error(`Solana RPC ${method} failed (${res.status})`);
-    const json = (await res.json()) as { result?: T; error?: { message?: string } };
-    if (json.error) throw new Error(`Solana RPC ${method}: ${json.error.message}`);
+    const json = (await res.json()) as { result?: T; error?: { message?: string; data?: { logs?: string[] } } };
+    if (json.error) {
+      // Include preflight logs so callers can tell WHY a swap failed (slippage,
+      // insufficient funds, …) instead of a generic "simulation failed".
+      const logs = json.error.data?.logs?.join(' | ') ?? '';
+      throw new Error(`Solana RPC ${method}: ${json.error.message}${logs ? ` — ${logs.slice(0, 400)}` : ''}`);
+    }
     return json.result as T;
   }
 
@@ -234,20 +257,31 @@ export class SolanaAdapter implements ChainAdapter {
 
   async swap(secretKey: string, quote: SwapQuote, req: SwapRequest): Promise<SwapResult> {
     const sk = decodeSecret(secretKey);
-    const res = await this.fetchImpl(`${JUP}/swap/v1/swap`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(buildSwapBody(quote.raw, req.owner)),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) throw new Error(`Jupiter swap build failed (${res.status})`);
-    const { swapTransaction } = (await res.json()) as { swapTransaction?: string };
-    if (!swapTransaction) throw new Error('Jupiter returned no transaction');
-
-    const signed = signTransaction(swapTransaction, sk);
-    const sig = await this.rpc<string>('sendTransaction', [signed, { encoding: 'base64', skipPreflight: false, maxRetries: 3 }]);
-    await this.confirm(sig).catch(() => {});
-    return { digest: sig, outAmount: quote.outAmount };
+    let lastErr: Error | undefined;
+    // Retry once: each attempt fetches a FRESH Jupiter transaction (new
+    // blockhash), which clears transient "simulation failed" flakes from a
+    // stale blockhash or a busy RPC. A genuine slippage/funds error persists
+    // and is surfaced with an actionable message below.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await this.fetchImpl(`${JUP}/swap/v1/swap`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(buildSwapBody(quote.raw, req.owner)),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) throw new Error(`Jupiter swap build failed (${res.status})`);
+        const { swapTransaction } = (await res.json()) as { swapTransaction?: string };
+        if (!swapTransaction) throw new Error('Jupiter returned no transaction');
+        const signed = signTransaction(swapTransaction, sk);
+        const sig = await this.rpc<string>('sendTransaction', [signed, { encoding: 'base64', skipPreflight: false, maxRetries: 3 }]);
+        await this.confirm(sig).catch(() => {});
+        return { digest: sig, outAmount: quote.outAmount };
+      } catch (err) {
+        lastErr = err as Error;
+      }
+    }
+    throw new Error(friendlySolanaError(lastErr?.message ?? 'swap failed'));
   }
 
   /** Poll signature status until confirmed (best-effort, bounded). */
