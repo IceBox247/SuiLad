@@ -1,6 +1,7 @@
 import type { Bot } from 'grammy';
-import { InlineKeyboard } from 'grammy';
+import { InlineKeyboard, InputFile } from 'grammy';
 import type { BotContext } from './context.js';
+import { renderPnlCard, type PnlCardData } from '../services/pnlCard.js';
 import { HELP, addrLabel, backMenu, chainPicker, code, confirmCancel, esc, homeText, link, mainMenu, walletMenu } from './ui.js';
 import { CHAINS, ALL_CHAINS } from '../chains/meta.js';
 import type { ChainId } from '../chains/types.js';
@@ -390,6 +391,7 @@ async function promptBuyAmount(ctx: BotContext, coinType: string, edit = false):
   kb.text('✏️ Buy X', 'qb:x').text('🔴 Sell', 'qb:sell').row();
   kb.text('🎯 Limit', 'qb:lim').text(`⚙️ Slippage ${(user?.settings.slippageBps ?? ctx.services.config.defaultSlippageBps) / 100}%`, 'set_slippage').row();
   kb.text(`⚡ Auto-Buy: ${autoBuyOn ? `ON (${autoBuyAmt})` : 'OFF'}`, 'qb:auto').row();
+  if (held > 0n) kb.text('📤 Share PnL', 'pnlcard').row();
   kb.url('📊 Chart', info?.url ?? suiscan).url('🔎 Suiscan', suiscan).url('𝕏 Search', xSearch).row();
   kb.text('🔄 Refresh', 'qb:ref').text('⬅️ Menu', 'menu');
 
@@ -503,6 +505,72 @@ function chainPnlLines(cp: import('../storage/types.js').ChainPosition, priceUsd
   return lines;
 }
 
+/**
+ * Build & send a shareable PnL flex-card image for the user's current position
+ * on the active chain (Sui or any non-Sui chain). Falls back to a text note
+ * when there's no position or the image can't be rendered.
+ */
+async function sharePnl(ctx: BotContext): Promise<void> {
+  const id = tgId(ctx);
+  const chain = await ctx.services.multiWallet.getActiveChain(id);
+  const u = await ctx.services.repo.getUser(id);
+  const botUsername = ctx.me?.username;
+  const referralCode = u?.referral.code;
+  let card: PnlCardData | null = null;
+
+  if (chain === 'sui') {
+    const coinType = await ctx.services.repo.getMeta(`buytok:${id}`);
+    const pos = coinType ? u?.positions.find((p) => p.coinType === coinType) : undefined;
+    if (coinType && pos && BigInt(pos.amount) > 0n) {
+      const info = await ctx.services.dex.token(coinType).catch(() => null);
+      const priceSui = info?.priceNative || (await ctx.services.oracle.priceNumber(coinType).catch(() => 0)) || 0;
+      const amountTokens = Number(BigInt(pos.amount)) / 10 ** pos.decimals;
+      const costSui = Number(BigInt(pos.costMist)) / 1e9;
+      const worthSui = amountTokens * priceSui;
+      const pct = costSui > 0 ? (worthSui / costSui - 1) * 100 : 0;
+      card = {
+        symbol: pos.symbol, chainLabel: 'Sui', side: 'BUY', returnPct: pct,
+        initial: `${costSui.toPrecision(4)} SUI`, worth: `${worthSui.toPrecision(4)} SUI`,
+        avgEntry: info ? `$${(costSui / amountTokens * (info.priceUsd / (priceSui || 1))).toPrecision(3)}` : undefined,
+        referralCode, botUsername,
+      };
+    }
+  } else {
+    const cur = await currentChainToken(ctx);
+    const meta = CHAINS[chain];
+    const cp = cur ? u?.chainPositions?.[`${chain}:${cur.token}`] : undefined;
+    if (cur && cp && BigInt(cp.amount) > 0n) {
+      const info = await ctx.services.dex.token(cur.token, meta.dexScreenerChain).catch(() => null);
+      const amountTokens = Number(BigInt(cp.amount)) / 10 ** cp.decimals;
+      const cost = Number(cp.costUsd);
+      const priceUsd = info?.priceUsd ?? 0;
+      const worth = amountTokens * priceUsd;
+      const pct = cost > 0 && priceUsd > 0 ? (worth / cost - 1) * 100 : 0;
+      card = {
+        symbol: cp.symbol, chainLabel: meta.name, side: 'BUY', returnPct: pct,
+        initial: `$${cost.toPrecision(4)}`, worth: `$${worth.toPrecision(4)}`,
+        avgEntry: cost > 0 ? `$${(cost / amountTokens).toPrecision(3)}` : undefined,
+        referralCode, botUsername,
+      };
+    }
+  }
+
+  if (!card) {
+    await ctx.reply('No position to share yet — buy a token first, then share your PnL card.', { reply_markup: backMenu() });
+    return;
+  }
+  const png = await renderPnlCard(card).catch(() => null);
+  if (!png) {
+    await ctx.reply('Could not render the PnL card right now — please try again.', { reply_markup: backMenu() });
+    return;
+  }
+  const sign = card.returnPct >= 0 ? '+' : '';
+  await ctx.replyWithPhoto(new InputFile(png, 'pnl.png'), {
+    caption: `${card.returnPct >= 0 ? '🟢' : '🔴'} <b>$${esc(card.symbol)}</b> ${sign}${card.returnPct.toFixed(2)}% on ${esc(card.chainLabel)}\nTrade on ${botUsername ? '@' + esc(botUsername) : 'SuiPad'}`,
+    parse_mode: 'HTML',
+  });
+}
+
 /** Resolve the active non-Sui chain context, or null when on Sui. */
 async function activeNonSui(ctx: BotContext): Promise<{ chain: ChainId; adapter: import('../chains/types.js').ChainAdapter; meta: typeof CHAINS[ChainId] } | null> {
   const chain = await ctx.services.multiWallet.getActiveChain(tgId(ctx));
@@ -593,6 +661,7 @@ async function chainCard(ctx: BotContext, token: string, edit = false): Promise<
   kb.text(`🟢 ${presets[0]} ${meta.nativeSymbol}`, `sq:${presets[0]}`).text(`🟢 ${presets[1]} ${meta.nativeSymbol}`, `sq:${presets[1]}`).row();
   kb.text(`🟢 ${presets[2]} ${meta.nativeSymbol}`, `sq:${presets[2]}`).text(`🟢 ${presets[3]} ${meta.nativeSymbol}`, `sq:${presets[3]}`).row();
   kb.text('✏️ Buy X', 'sq:x').text('🔴 Sell', 'ssell').row();
+  if (held > 0n) kb.text('📤 Share PnL', 'pnlcard').row();
   kb.url('📊 Chart', info?.url ?? adapter.explorerAddress(token)).url('🔎 Explorer', adapter.explorerAddress(token)).url('𝕏 Search', xSearch).row();
   kb.text('🔄 Refresh', 'sref').text('⬅️ Menu', 'menu');
 
@@ -1463,6 +1532,7 @@ export function registerHandlers(bot: Bot<BotContext>): void {
   cb('positions', showPositions);
   cb('settings', showSettings);
   cb('referral', showReferral);
+  cb('pnlcard', async (ctx) => { await ctx.reply('🎨 Building your PnL card…'); await sharePnl(ctx); });
   cb('cashback', showCashback);
   cb('cashback_claim', async (ctx) => {
     const id = tgId(ctx);
