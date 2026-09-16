@@ -12,6 +12,8 @@ const LIFI_CHAIN: Partial<Record<Chain, string>> = {
   polygon: 'POL',
   bsc: 'BSC',
   solana: 'SOL',
+  arc: 'arc',
+  stable: 'sta',
 };
 
 /**

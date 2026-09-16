@@ -1,6 +1,6 @@
-export type Chain = 'sui' | 'ethereum' | 'solana' | 'base' | 'arbitrum' | 'polygon' | 'bsc';
+export type Chain = 'sui' | 'ethereum' | 'solana' | 'base' | 'arbitrum' | 'polygon' | 'bsc' | 'arc' | 'stable';
 
-export const SUPPORTED_CHAINS: Chain[] = ['sui', 'ethereum', 'solana', 'base', 'arbitrum', 'polygon', 'bsc'];
+export const SUPPORTED_CHAINS: Chain[] = ['sui', 'ethereum', 'solana', 'base', 'arbitrum', 'polygon', 'bsc', 'arc', 'stable'];
 
 export interface BridgeQuoteRequest {
   fromChain: Chain;

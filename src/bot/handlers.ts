@@ -1136,6 +1136,7 @@ const BRIDGE_CHAINS: { id: ChainId; label: string }[] = [
   { id: 'ethereum', label: 'Ξ Ethereum' }, { id: 'base', label: '🔵 Base' },
   { id: 'arbitrum', label: '🔷 Arbitrum' }, { id: 'polygon', label: '🟣 Polygon' },
   { id: 'bsc', label: '🟡 BNB' }, { id: 'solana', label: '◎ Solana' },
+  { id: 'arc', label: '🅰️ Arc' }, { id: 'stable', label: '💵 Stable' },
 ];
 /** Common bridge tokens and their decimals. */
 const BRIDGE_TOKENS: { sym: string; dec: number }[] = [
